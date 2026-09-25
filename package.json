@@ -3,7 +3,7 @@
   "name": "raycast-window-panel",
   "title": "Window Panel",
   "description": "窗口操作面板：单窗布局 / 自动排布 / 布局记忆与快照（Hammerspoon 窗口面板平替）",
-  "icon": "assets/icon.png",
+  "icon": "assets/logo.png",
   "author": "havoc",
   "license": "MIT",
   "keywords": [
