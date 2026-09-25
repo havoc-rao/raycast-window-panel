@@ -36,10 +36,6 @@ declare namespace Preferences {
   export type ManageMemories = ExtensionPreferences & {}
   /** Preferences accessible in the `import-from-hammerspoon` command */
   export type ImportFromHammerspoon = ExtensionPreferences & {}
-  /** Preferences accessible in the `spike-writecheck` command */
-  export type SpikeWritecheck = ExtensionPreferences & {}
-  /** Preferences accessible in the `spike-writecheck-noview` command */
-  export type SpikeWritecheckNoview = ExtensionPreferences & {}
 }
 
 declare namespace Arguments {
@@ -61,9 +57,5 @@ declare namespace Arguments {
   export type ManageMemories = {}
   /** Arguments passed to the `import-from-hammerspoon` command */
   export type ImportFromHammerspoon = {}
-  /** Arguments passed to the `spike-writecheck` command */
-  export type SpikeWritecheck = {}
-  /** Arguments passed to the `spike-writecheck-noview` command */
-  export type SpikeWritecheckNoview = {}
 }
 

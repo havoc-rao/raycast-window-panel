@@ -3,7 +3,7 @@
   "name": "raycast-window-panel",
   "title": "Window Panel",
   "description": "窗口操作面板：单窗布局 / 自动排布 / 布局记忆与快照（Hammerspoon 窗口面板平替）",
-  "icon": "assets/logo.png",
+  "icon": "logo.png",
   "author": "havoc",
   "license": "MIT",
   "keywords": [
@@ -75,18 +75,6 @@
       "title": "从 Hammerspoon 导入",
       "subtitle": "Import from Hammerspoon",
       "description": "一次性导入 ~/.hammerspoon/window-layouts.json 到本扩展的数据文件",
-      "mode": "no-view"
-    },
-    {
-      "name": "spike-writecheck",
-      "title": "[dev] spike-writecheck",
-      "description": "[dev] 写窗口机制对照（view 模式）",
-      "mode": "view"
-    },
-    {
-      "name": "spike-writecheck-noview",
-      "title": "[dev] spike-writecheck-noview",
-      "description": "[dev] 写窗口机制对照（no-view，连跑 3 次）",
       "mode": "no-view"
     }
   ],
