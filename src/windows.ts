@@ -2,7 +2,7 @@
 import type { Frame, Region, Screen, TargetWindow } from "./types";
 
 export interface WindowProvider {
-  /** 唤起前的目标窗口（frontmost + front window；兜底：首个非 Raycast 可见进程的标准窗口） */
+  /** 唤起前目标 App 的焦点窗口；无法确定时返回 null，不猜测其他 App 的窗口 */
   getActiveWindow(): Promise<TargetWindow | null>;
   /** 目标屏幕上可排布的窗口（标准窗口；z 序近似 = 焦点优先 + App 优先），不含目标自身 */
   listWindowsOnActiveDesktop(target: TargetWindow): Promise<TargetWindow[]>;

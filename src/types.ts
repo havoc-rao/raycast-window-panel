@@ -40,7 +40,7 @@ export interface LayoutsData {
 
 /** Provider 暴露的窗口对象（windows.ts 接口的返回类型） */
 export interface TargetWindow {
-  /** 稳定句柄：进程 unix id + 窗口索引（如 "12345|1"） */
+  /** 临时句柄：进程 unix id + 窗口索引（如 "12345|1"）；窗口列表变化时索引可能失效 */
   id: string;
   appName: string;
   bundleId: string;

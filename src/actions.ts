@@ -20,6 +20,7 @@ import { AppleScriptWindowProvider } from "./provider-applescript";
 import { createNativeProvider } from "./provider-native";
 import { ProviderError } from "./windows";
 import type { WindowProvider } from "./windows";
+import { timed } from "./timing";
 
 let providerPromise: Promise<WindowProvider> | null = null;
 export function getProvider(): Promise<WindowProvider> {
@@ -80,16 +81,16 @@ export async function resolveTarget(): Promise<TargetWindow | null> {
 /** 单窗布局：只动目标窗口（铺满/留缝/居中/半屏/1/4），不改记忆、不排其他窗口 */
 export async function applySingleLayout(templateId: string): Promise<ActionResult> {
   const p = await getProvider();
-  const target = await p.getActiveWindow();
+  const target = await timed("single.target", () => p.getActiveWindow());
   if (!target) return fail("没有焦点窗口");
   if (target.fullScreen) return fail("请先退出当前窗口的系统全屏，再调整布局");
-  const region = await p.getScreenRegion(target);
+  const region = await timed("single.screen", () => p.getScreenRegion(target));
   if (!region || region.w <= 0 || region.h <= 0) return fail("当前窗口屏幕不可用，请重新打开面板");
   const tmpl = singleLayoutById(templateId);
   if (!tmpl || !tmpl.fn) return fail("布局不存在");
   const frame = tmpl.fn(1, region)[0];
   try {
-    await p.setBounds(target, frame);
+    await timed("single.write", () => p.setBounds(target, frame));
   } catch (e) {
     return providerFail(e);
   }
@@ -103,9 +104,9 @@ export async function applySingleLayout(templateId: string): Promise<ActionResul
  */
 export async function runArrange(tmplId?: string): Promise<ActionResult> {
   const p = await getProvider();
-  const target = await p.getActiveWindow();
+  const target = await timed("arrange.target", () => p.getActiveWindow());
   if (!target) return fail("没有焦点窗口");
-  const region = await p.getScreenRegion(target);
+  const region = await timed("arrange.screen", () => p.getScreenRegion(target));
   if (!region) return fail("当前窗口屏幕不可用，请重新打开面板");
   const screens = await p.getAllScreens();
   const others = await p.listWindowsOnActiveDesktop(target);
@@ -120,7 +121,7 @@ export async function runArrange(tmplId?: string): Promise<ActionResult> {
       const f = plan.frames[i];
       if (!f) continue;
       try {
-        await p.setBounds(ctx.fluid[i], f);
+        await timed(`arrange.write[${i}]`, () => p.setBounds(ctx.fluid[i], f));
       } catch (e) {
         return providerFail(e);
       }

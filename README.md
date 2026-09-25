@@ -18,11 +18,28 @@
 
 ## 安装
 
-1. 打开 Raycast → `Import Extension…`（Extensions → `+` → Import Extension），选择本目录：
-   ```
-   ~/Documents/Projects/tools/macOS/raycast-window-panel
-   ```
-   或开发模式：在仓库目录运行 `npm install && npx ray develop`。
+### 本机日常使用（非开发调试）
+
+在仓库目录执行：
+
+```sh
+npm install
+npx ray build        # 本机构建（默认 -e dev）；不要加 -e dist
+```
+
+首次使用时，打开 Raycast，搜索并执行 `Import Extension`，选择本仓库目录（包含 `package.json` 的目录，不是 `dist`）：
+
+```text
+~/Documents/Projects/tools/macOS/raycast-window-panel
+```
+
+这里的「安装」是从源码导入到本机，不等于发布到 Raycast Store。日常使用不需要让 `ray develop` 一直运行；更新源码后，重新运行 `npm install && npx ray build`。
+
+> `npx ray build -e dist` 用于验证分发构建，不是本机安装命令；`npx ray develop` 用于开发调试和自动重载。CLI 用法见 [Raycast 官方文档](https://developers.raycast.com/information/developer-tools/cli)。
+
+### 权限与快捷键
+
+1. 按上面的步骤完成本机导入。
 2. 打开任意命令，若被系统拦截，请到 **系统设置 → 隐私与安全性** 给 Raycast 授权：
    - **辅助功能**（Accessibility）：窗口枚举 / 读取与移动的必需权限；
    - **自动化 → System Events**：允许 Raycast 控制 System Events（首次操作时系统会弹窗询问）。
@@ -30,7 +47,7 @@
 
 > 实测说明：窗口位置/大小的写入**不需要**屏幕录制权限（System Events + 辅助功能即可，本机对照实验验证）；屏幕录制仅用于 CGWindowList 的窗口名显示，本扩展未依赖。
 >
-> 行为说明：执行窗口移动/排布时，扩展会**先关闭 Raycast 面板**再写入窗口（`closeMainWindow()` + 短暂等待，与原版 Hammerspoon「关面板→回焦→执行」的交互一致；多窗排布只关一次），随后以 Toast/HUD 反馈结果。写入失败（-10000 或窗口已失效）会给出对应提示。
+> 行为说明：执行窗口移动/排布时，扩展会**先关闭 Raycast 面板**再写入窗口（`closeMainWindow()`，与原版 Hammerspoon「关面板→回焦→执行」的交互一致；多窗排布只关一次），随后以 Toast/HUD 反馈结果。成功路径不额外等待；写入偶发失败会延迟约 300ms 重试一次，仍失败（-10000 或窗口已失效）则给出对应提示。屏幕信息在命令内缓存约 1 秒，避免重复查询。
 
 ## 偏好项
 
@@ -52,10 +69,11 @@
 ## 开发
 
 ```sh
-npm install          # 安装依赖（@raycast/api、vitest、typescript 等）
-npm test             # vitest：几何 golden 回归 + 模板/存储/引擎单测
-npx ray build -e dist   # 类型检查 + 构建
-npx ray develop      # 注册进 Raycast 开发调试
+npm install            # 安装依赖（@raycast/api、vitest、typescript 等）
+npm test               # vitest：几何 golden 回归 + 模板/存储/引擎单测
+npx ray build          # 本机构建，供导入 Raycast 后日常使用（见「安装」）
+npx ray build -e dist  # 类型检查 + 分发构建验证（npm run build），不是本机安装
+npx ray develop        # 注册进 Raycast 开发调试，监听源码变化（npm run dev）
 ```
 
 ## 架构
@@ -67,11 +85,11 @@ commands/*.tsx (List UI + Toast/Alert)
         ├─ src/templates.ts 模板注册表（15 排布模板 + 2 特殊项 + 12 单窗规格 + MRU 排序）
         ├─ src/geometry.ts  纯几何（splitH/splitV/tiled/slotFrames/cascadeFrames/clampFrame）
         ├─ src/storage.ts   数据文件原子写（tmp+rename）+ LocalStorage 语义（MRU/上次样式/开关）
-        └─ src/provider-applescript.ts  System Events 后端（目标窗口 frontmost+front window，
-                                           句柄 = unix id + 窗口索引，AXSubrole 标准过滤，AXFullScreen 拦截）
+        └─ src/provider-applescript.ts  System Events 后端（目标 App 身份 + AXFocusedWindow / AXMainWindow，
+                                           句柄 = unix id + 窗口索引，后台窗口标准过滤，AXFullScreen 拦截）
 ```
 
-- 目标窗口：Raycast 面板打开时 System Events `frontmost` 仍返回唤起前的 App（已实测），`window 1` 即目标窗口；
+- 目标窗口：通过 Raycast 获取唤起前的 App，优先按 bundle ID 定位进程，定向读取 `AXFocusedWindow` / `AXMainWindow`；不再扫描所有 App 后按名字取第一个窗口（多个 Electron 进程可能同名）。无法可靠确定目标时不猜测其他 App 的窗口；
 - 排布 z 序近似：焦点优先 + 前台 App 优先（v1）；P5 计划用 swift helper（CGWindowList 精确 z 序 + 多屏 bounds，扩展内 spawn 已实测 AX 可信）精化；
 - 已知限制：受应用最小窗口尺寸限制（与原版一致）；AppleScript 后端无法移动部分应用拒绝 AX 写入的窗口时会给出提示。
 
