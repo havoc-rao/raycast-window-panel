@@ -1,0 +1,129 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "raycast-window-panel",
+  "title": "Window Panel",
+  "description": "窗口操作面板：单窗布局 / 自动排布 / 布局记忆与快照（Hammerspoon 窗口面板平替）",
+  "icon": "assets/icon.png",
+  "author": "havoc",
+  "license": "MIT",
+  "keywords": [
+    "window",
+    "layout",
+    "arrange",
+    "snapshot",
+    "memory"
+  ],
+  "commands": [
+    {
+      "name": "window-panel",
+      "title": "窗口操作面板",
+      "subtitle": "Window Panel",
+      "description": "主菜单：当前窗口布局 / 自动排布 / 重放 App / 记忆与解除记忆",
+      "mode": "view"
+    },
+    {
+      "name": "window-layout",
+      "title": "当前窗口布局",
+      "subtitle": "12 种单窗布局",
+      "description": "仅调整当前窗口（铺满/留缝/居中/半屏/1/4 屏），不影响其他窗口",
+      "mode": "view"
+    },
+    {
+      "name": "arrange",
+      "title": "自动排布",
+      "subtitle": "Arrange · 模板选择器",
+      "description": "按模板排布当前屏幕的弹性窗口；含保存/重放/两步删除「我的布局」",
+      "mode": "view"
+    },
+    {
+      "name": "arrange-last",
+      "title": "按上次样式排布",
+      "subtitle": "Arrange (Last Style)",
+      "description": "一键按当前弹性窗口数的上次样式直接排布，无记忆则用默认样式",
+      "mode": "no-view"
+    },
+    {
+      "name": "save-window",
+      "title": "记忆当前窗口",
+      "subtitle": "Save Window",
+      "description": "保存当前窗口位置+大小，成为记忆（自动排布的豁免名单，可重放）",
+      "mode": "no-view"
+    },
+    {
+      "name": "forget-window",
+      "title": "解除当前记忆",
+      "subtitle": "Forget Window",
+      "description": "删除当前窗口的记忆记录",
+      "mode": "no-view"
+    },
+    {
+      "name": "restore-app",
+      "title": "重放 App",
+      "subtitle": "Restore App",
+      "description": "列出所有有记忆的 App，重放其全部已记忆窗口（增强版）",
+      "mode": "view"
+    },
+    {
+      "name": "manage-memories",
+      "title": "管理记忆",
+      "subtitle": "Manage Memories",
+      "description": "全量记忆列表：搜索、单条重放 / 删除",
+      "mode": "view"
+    },
+    {
+      "name": "import-from-hammerspoon",
+      "title": "从 Hammerspoon 导入",
+      "subtitle": "Import from Hammerspoon",
+      "description": "一次性导入 ~/.hammerspoon/window-layouts.json 到本扩展的数据文件",
+      "mode": "no-view"
+    },
+    {
+      "name": "spike-writecheck",
+      "title": "[dev] spike-writecheck",
+      "description": "[dev] 写窗口机制对照（view 模式）",
+      "mode": "view"
+    },
+    {
+      "name": "spike-writecheck-noview",
+      "title": "[dev] spike-writecheck-noview",
+      "description": "[dev] 写窗口机制对照（no-view，连跑 3 次）",
+      "mode": "no-view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "layoutsPath",
+      "type": "textfield",
+      "required": false,
+      "title": "布局数据文件路径",
+      "description": "window-layouts.json 的路径（~ 自动展开）。默认使用本扩展独立数据目录",
+      "default": "~/Library/Application Support/raycast-window-panel/window-layouts.json",
+      "placeholder": "~/Library/Application Support/raycast-window-panel/window-layouts.json"
+    },
+    {
+      "name": "memoryTargetEnabled",
+      "type": "checkbox",
+      "required": false,
+      "title": "记录到此 App",
+      "label": "允许「记忆当前窗口」写入数据文件",
+      "description": "关闭后 save-window 不写盘（沿用原面板顶部开关）",
+      "default": true
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.72.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "@types/react": "^19.3.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "test": "vitest run"
+  }
+}
