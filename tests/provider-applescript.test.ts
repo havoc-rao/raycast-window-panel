@@ -172,6 +172,130 @@ describe("PID-stable writes", () => {
   });
 });
 
+describe("app-scoped enumeration (replay fast path)", () => {
+  const std1 = ["11228", "Electron", "com.github.Electron", "Harness", "0", "0", "900", "600", "AXStandardWindow", "false", "false", "true", "1"];
+  const std2 = ["11228", "Electron", "com.github.Electron", "Console", "0", "800", "900", "400", "", "false", "false", "true", "2"];
+  const minimized = ["11228", "Electron", "com.github.Electron", "Hidden", "0", "0", "100", "100", "AXStandardWindow", "false", "true", "true", "3"];
+  const raycast = ["999", "Raycast", "com.raycast.macos", "Panel", "0", "0", "100", "100", "AXStandardWindow", "false", "false", "true", "1"];
+
+  it("scopes the script to the bundle and filters to standard windows", async () => {
+    output([std1, std2, minimized, raycast].map((r) => r.join(SEP)).join("\n"));
+    const wins = await provider.listWindowsForApp("com.github.Electron");
+    expect(wins.map((w) => w.title)).toEqual(["Harness", "Console"]);
+    expect(wins[0]).toMatchObject({ id: "11228|1", bundleId: "com.github.Electron" });
+    // 脚本内按 bundleID 限定窗口级读取（进程级属性仍全量轻扫）
+    expect(run.mock.calls[0][0]).toContain('if pbid is "com.github.Electron" then');
+    expect(run.mock.calls[0][0]).toContain("repeat with p in (every application process whose visible is true)");
+  });
+
+  it("falls back to full enumeration when bundleId cannot locate a process", async () => {
+    output([std1, raycast].map((r) => r.join(SEP)).join("\n"));
+    expect(await provider.listWindowsForApp("unknown")).toHaveLength(1);
+    const script = run.mock.calls[0][0];
+    expect(script).toContain("if true then");
+    expect(script).not.toContain('if pbid is "unknown" then');
+  });
+
+  it("escapes the bundle identifier in the guard", async () => {
+    output("");
+    await provider.listWindowsForApp('com.quoted"app');
+    expect(run.mock.calls[0][0]).toContain('if pbid is "com.quoted\\"app" then');
+  });
+});
+
+describe("batch writes (replay fast path)", () => {
+  const w1 = { ...window, id: "73245|3", title: "A" };
+  const w2 = { ...window, id: "73245|4", title: "B" };
+
+  it("writes every window in one script with per-item isolation", async () => {
+    output("OK" + SEP + "OK");
+    await provider.setBoundsBatch([{ window: w1, frame: { x: 10, y: 20, w: 300, h: 200 } }, { window: w2, frame: { x: 400, y: 20, w: 300, h: 200 } }]);
+    expect(closeMainWindow).toHaveBeenCalledOnce();
+    expect(run).toHaveBeenCalledOnce();
+    const script = run.mock.calls[0][0];
+    expect(script).toContain("set position of window 3 of p to {10, 20}");
+    expect(script).toContain("set position of window 4 of p to {400, 20}");
+    expect(script).toContain("set item0 to \"OK\"");
+    expect(script).toContain("set item1 to \"OK\"");
+    expect(script).toContain("set end of out to item0");
+    expect(script).toContain("set end of out to item1");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("skips scripts entirely for an empty batch", async () => {
+    await provider.setBoundsBatch([]);
+    expect(run).not.toHaveBeenCalled();
+    expect(closeMainWindow).not.toHaveBeenCalled();
+  });
+
+  it("retries only the failed items once after 300ms and resolves when the retry succeeds", async () => {
+    run.mockResolvedValueOnce({ ok: true, output: "ERR|-10000|denied" + SEP + "OK", error: "" });
+    output("OK");
+    const write = provider.setBoundsBatch([{ window: w1, frame: { x: 10, y: 20, w: 300, h: 200 } }, { window: w2, frame: { x: 400, y: 20, w: 300, h: 200 } }]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(300);
+    await write;
+    expect(run).toHaveBeenCalledTimes(2);
+    // 重试只带失败项
+    const retry = run.mock.calls[1][0];
+    expect(retry).toContain("window 3 of p");
+    expect(retry).not.toContain("window 4 of p");
+    expect(closeMainWindow).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws a readable ProviderError when a window still fails after retry", async () => {
+    run.mockResolvedValueOnce({ ok: true, output: "ERR|-10000|denied" + SEP + "OK", error: "" });
+    run.mockResolvedValueOnce({ ok: true, output: "ERR|-10000|denied", error: "" });
+    const write = provider.setBoundsBatch([{ window: w1, frame: { x: 10, y: 20, w: 300, h: 200 } }, { window: w2, frame: { x: 400, y: 20, w: 300, h: 200 } }]);
+    const outcome = expect(write).rejects.toThrow("-10000");
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(300);
+    await outcome;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports generic failure details for non-permission errors", async () => {
+    run.mockResolvedValueOnce({ ok: true, output: "ERR|0|invalid-handle", error: "" });
+    run.mockResolvedValueOnce({ ok: true, output: "ERR|0|invalid-handle", error: "" });
+    const write = provider.setBoundsBatch([{ window: w1, frame: { x: 10, y: 20, w: 300, h: 200 } }]);
+    const outcome = expect(write).rejects.toThrow("部分窗口（1/1）写入失败");
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(300);
+    await outcome;
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+
+  it("treats a whole-script failure as all-items failure", async () => {
+    run.mockResolvedValueOnce({ ok: false, output: "", error: "AX denied" });
+    run.mockResolvedValueOnce({ ok: true, output: "OK", error: "" });
+    const write = provider.setBoundsBatch([{ window: w1, frame: { x: 10, y: 20, w: 300, h: 200 } }]);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(300);
+    await expect(write).resolves.toBeUndefined();
+    expect(closeMainWindow).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps status alignment when an item has an invalid handle", async () => {
+    const bad = { ...window, id: "not-a-handle", title: "bad" };
+    run.mockResolvedValueOnce({ ok: true, output: "ERR|0|invalid-handle" + SEP + "OK", error: "" });
+    output("OK" + SEP + "OK");
+    const write = provider.setBoundsBatch([{ window: bad, frame: { x: 10, y: 20, w: 300, h: 200 } }, { window: w2, frame: { x: 400, y: 20, w: 300, h: 200 } }]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(300);
+    await write;
+    // 重试只含失效项
+    const retry = run.mock.calls[1][0];
+    expect(retry).toContain('set item0 to "ERR|0|invalid-handle"');
+    expect(retry).not.toContain("window 4 of p");
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("screen cache", () => {
   const screens = [{ frame: { x: 0, y: 0, w: 1920, h: 1080 } }];
   const fallback = [{ frame: { x: 0, y: 0, w: 2560, h: 1440 } }];

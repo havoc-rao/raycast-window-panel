@@ -259,6 +259,19 @@ describe("记忆动作（save / forget / replay / snapshot 删除）", () => {
     expect(plan.ok).toBe(false);
     expect(plan.count).toBe(0);
   });
+  it("replayAppWindows：多条记忆命中同一窗口（标题兜底）→ 去重只保留第一条", () => {
+    const data = layouts({
+      "a|t1": { bundleID: "a", title: "t1", frame: { x: 10, y: 10, w: 400, h: 300 } },
+      "a|t2": { bundleID: "a", title: "t2", frame: { x: 500, y: 10, w: 400, h: 300 } },
+    });
+    // 唯一窗口 a 窗口标题是 t2：记忆 t1 走同 bundleID 兜底命中同一窗口，t2 精确命中同一窗口
+    const a1 = win("a", "t2", { x: 0, y: 0, w: 800, h: 600 });
+    const plan = replayAppWindows(data, "a", [a1], SCREENS);
+    expect(plan.ok).toBe(true);
+    expect(plan.count).toBe(1);
+    expect(plan.windows).toHaveLength(1);
+    expect(plan.frames[0]).toEqual({ x: 10, y: 10, w: 400, h: 300 }); // 第一条记忆胜出
+  });
   it("deleteSnapshot：两步确认后删除，返回槽位数", () => {
     const data = layouts({}, { savedAt: 1, count: 3, frames: [{ x: 0, y: 0, w: 1, h: 1 }, { x: 1, y: 0, w: 1, h: 1 }, { x: 2, y: 0, w: 1, h: 1 }] });
     expect(deleteSnapshot(data)).toBe(3);
