@@ -141,7 +141,7 @@ interface WindowProvider {
 - **P2** AppleScript provider + 布局命令（window-layout / arrange / arrange-last / window-panel 主菜单）；
 - **P3** 记忆命令（save / forget / restore-app / manage-memories）+ 快照三步曲（保存/重放/两步删除）+ 偏好 + import-from-hammerspoon；
 - **P4** 打磨：toast/错误态（无权限、无焦点窗口、全屏拦截）、图标、README、与 Hammerspoon 版并行实测；
-- **P5**（**已落地**）swift 常驻 helper `windowkit`（`assets/windowkit.swift`，首次 `swiftc` 自动编译缓存到 `~/Library/Caches/raycast-window-panel/`）：**主后端**，与 Hammerspoon 同构（进程内原生 AX + NSWorkspace + NSScreen，stdio 换行 JSON 协议）；不可用（无 swiftc/编译失败/辅助功能未授权/进程崩溃）时整体回落 AppleScript。z 序仍为近似（helper 用原生 AX 逐进程枚举；CGWindowList 精确 z 序留作后续增强）。
+- **P5**（**已落地**）swift 常驻 helper `windowkit`（`assets/windowkit.swift`，首次 `swiftc` 自动编译缓存到 `~/Library/Caches/raycast-window-panel/`）：**主后端**，与 Hammerspoon 同构（进程内原生 AX + NSWorkspace + NSScreen）。传输为 **unix socket daemon**：helper 由扩展进程首次 spawn，之后**跨扩展进程存活**（新会话直接连接复用，不再重复付 spawn 冷启动；空闲 10 分钟自动退出并清理 socket；孤儿 daemon 失去 AX 信任时探针检测 → 自动重建）。不可用（无 swiftc/编译失败/辅助功能未授权/进程崩溃）时整体回落 AppleScript。z 序仍为近似（helper 用原生 AX 逐进程枚举；CGWindowList 精确 z 序留作后续增强）。
 
 ### 重放路径性能优化（2026-09-25 已落地）
 
@@ -151,7 +151,7 @@ interface WindowProvider {
 - **并行读取**：窗口枚举与屏幕读取 `Promise.all` 并行；屏幕缓存 TTL 1s。
 - **批量写入**：一次调用写全部窗口（逐窗隔离、状态回传）；失败项仅重试一次（关面板 + 300ms，只带失败项）；错误号保留供 -10000 权限提示检测。
 - **目标去重 + 跳过原位**：多条旧记忆命中同一窗口只保留第一条；已在目标位置的窗口不写。
-- **windowkit 常驻后端**（P5 落地）：osascript 桥 ~125ms/次（进程 spawn + Apple Events 分发的固定成本）是剩余延迟根因；swift helper 常驻后单次操作 ~1–5ms（原生 AX/NSScreen 进程内直调）。
+- **windowkit 常驻后端**（P5 落地）：osascript 桥 ~125ms/次（进程 spawn + Apple Events 分发的固定成本）是剩余延迟根因；swift helper **socket daemon 常驻**后单次操作 ~1–5ms（原生 AX/NSScreen 进程内直调），且**跨扩展进程复用**——Raycast 空闲回收扩展进程后，下一次点击只剩 socket 连接 + ping（毫秒级），不再重付 spawn；命令装载时后台预热 provider。
 - 效果：重放路径从 ~N+3 次 osascript（每次 ~125ms）变为 1–2 次 windowkit 请求（毫秒级往返）；helper 不可用时自动回落 AppleScript。
 
 ## 八、风险与应对

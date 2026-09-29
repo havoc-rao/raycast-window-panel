@@ -88,14 +88,15 @@ commands/*.tsx (List UI + Toast/Alert)
         ├─ src/geometry.ts  纯几何（splitH/splitV/tiled/slotFrames/cascadeFrames/clampFrame）
         ├─ src/storage.ts   数据文件原子写（tmp+rename）+ LocalStorage 语义（MRU/上次样式/开关）
         ├─ src/panel-close.ts  写路径前置「关面板」语义（两后端共用 + 1.5s 去重记忆）
-        ├─ src/provider-windowkit.ts  主后端：常驻 swift helper（Hammerspoon 同构）
-        │     ├─ assets/windowkit.swift  原生 AX + NSWorkspace + NSScreen，stdio 换行 JSON 协议
-        │     └─ 首次使用 swiftc 自动编译缓存（~/Library/Caches/raycast-window-panel/），失败回落 ↓
+        ├─ src/provider-windowkit.ts  主后端：常驻 swift helper daemon（Hammerspoon 同构）
+        │     ├─ assets/windowkit.swift  原生 AX + NSWorkspace + NSScreen，unix socket + 换行 JSON 协议
+        │     ├─ 首次使用 swiftc 自动编译缓存（~/Library/Caches/raycast-window-panel/），失败回落 ↓
+        │     └─ socket daemon 跨扩展进程存活（空闲 10 分钟自动退出；孤儿失去 AX 信任自动重建）
         └─ src/provider-applescript.ts  兜底后端：System Events（目标 App 身份 + AXFocusedWindow /
                                           AXMainWindow，句柄 = unix id + 窗口索引，AXFullScreen 拦截）
 ```
 
-- 主后端 windowkit：扩展启动时 spawn 一个常驻 swift 进程，窗口枚举/读写/屏幕全部为进程内原生 API 调用（单次操作 ~1–5ms，与 Hammerspoon 同构），消除 osascript 每次 ~125ms 的进程开销；辅助功能未授权 / 无 swiftc / 编译失败 / 进程崩溃时自动回落 AppleScript 后端；
+- 主后端 windowkit：扩展首次调用时 spawn 一个 swift 进程，之后**常驻为 unix socket daemon**——窗口枚举/读写/屏幕全部为进程内原生 API 调用（单次操作 ~1–5ms，与 Hammerspoon 同构）；Raycast 空闲回收扩展进程后，下一会话直接连接复用，不再重复付 spawn 冷启动；辅助功能未授权 / 无 swiftc / 编译失败 / 进程崩溃时自动回落 AppleScript 后端；
 - 目标窗口：通过 Raycast 获取唤起前的 App，优先按 bundle ID 定位进程，定向读取 `AXFocusedWindow` / `AXMainWindow`；不再扫描所有 App 后按名字取第一个窗口（多个 Electron 进程可能同名）。无法可靠确定目标时不猜测其他 App 的窗口；
 - 排布 z 序近似：焦点优先 + 前台 App 优先（v1）；CGWindowList 精确 z 序为后续增强；
 - 已知限制：受应用最小窗口尺寸限制（与原版一致）；后端无法移动部分应用拒绝 AX 写入的窗口时会给出提示。
