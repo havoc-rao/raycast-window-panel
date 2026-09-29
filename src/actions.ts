@@ -36,6 +36,12 @@ export function getProvider(): Promise<WindowProvider> {
   return providerPromise;
 }
 
+// 预热：命令装载即在后台初始化 provider —— 面板打开/用户浏览菜单期间完成 helper
+// 连接或 spawn，点击执行时不再付冷启动（windowkit daemon 跨进程常驻，会话间复用）。
+void getProvider().catch(() => {
+  /* 回落 AppleScript 的路径由 getProvider 内部处理，这里只是兜底 */
+});
+
 export const memory = new MemoryStore(raycastKV);
 
 export interface ActionResult {
