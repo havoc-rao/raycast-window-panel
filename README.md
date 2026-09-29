@@ -33,9 +33,35 @@ npx ray build        # 本机构建（默认 -e dev）；不要加 -e dist
 ~/Documents/Projects/tools/macOS/raycast-window-panel
 ```
 
-这里的「安装」是从源码导入到本机，不等于发布到 Raycast Store。日常使用不需要让 `ray develop` 一直运行；更新源码后，重新运行 `npm install && npx ray build`。
+这里的「安装」是从源码导入到本机，不等于发布到 Raycast Store。日常使用不需要让 `ray develop` 一直运行；更新源码后，重新运行 `npm install && npx ray build`。（把源码分发到其他 Mac 手动安装的步骤见下节。）
 
 > `npx ray build -e dist` 用于验证分发构建，不是本机安装命令；`npx ray develop` 用于开发调试和自动重载。CLI 用法见 [Raycast 官方文档](https://developers.raycast.com/information/developer-tools/cli)。
+
+### 手动安装到其他 Mac（源码 / ZIP 分发）
+
+未上架 Raycast Store 时，可以把源码分发给其他 Mac（GitHub 仓库地址或 ZIP 压缩包），对方按以下步骤手动导入安装。
+
+分发内容只需源码：从 git 导出（或下载 GitHub 的 ZIP）即可，`.gitignore` 已排除 `node_modules/`、`dist/`、`.cache/` 与个人数据文件。**仅支持 macOS**——窗口操作依赖 macOS 原生 AX 能力，Windows 上的 Raycast 无法使用本扩展。
+
+在目标机器上：
+
+1. **前置要求**：已安装 [Raycast](https://www.raycast.com) 和 Node.js（`node -v` 可验证；没有 Node 时 `brew install node` 或从 [nodejs.org](https://nodejs.org) 下载）。
+2. **获取源码**：`git clone` 仓库，或解压 ZIP。**放到一个长期保留的目录**（如 `~/raycast-window-panel`），Raycast 导入后一直引用该目录，不要放在「下载」等会被清理的位置。
+3. **安装依赖并构建**：在项目目录打开终端执行
+   ```sh
+   npm install
+   npx ray build        # 本机构建（默认 -e dev）；不要加 -e dist
+   ```
+4. **导入到 Raycast**：打开 Raycast，搜索并执行 `Import Extension`，选择项目根目录（包含 `package.json` 的目录，**不是** `dist`）。
+5. **授权系统权限**：按下节「权限与快捷键」操作。日常使用不需要让 `ray develop` 一直运行。
+
+> 首次执行的命令会自动编译 windowkit 原生后端；目标机器没有 swift 编译环境时自动回落 AppleScript 后端，功能不受影响，因此**不要求对方安装 Xcode**（编译产物缓存于 `~/Library/Caches/raycast-window-panel/`）。
+
+**更新**：对方拿到新源码后，在项目目录重新执行 `npm install && npx ray build`，再在 Raycast 中重新执行 `Import Extension` 选择同一目录，即可覆盖导入。
+
+**数据说明**：记忆 / 快照数据存放在各 Mac 本地（默认 `~/Library/Application Support/raycast-window-panel/window-layouts.json`），不随源码分发，也不跨机器同步。
+
+> 面向普通用户的零命令行安装（以及自动更新）只能走 Raycast Store：按 [Raycast 官方发布文档](https://developers.raycast.com/basics/publish-an-extension) 用 `npx ray publish` 提交审核（或在 `package.json` 的 `scripts` 中加入 `"publish": "npx @raycast/api@latest publish"` 后执行 `npm run publish`），通过后用户即可在商店中搜索安装。手动安装仅用于未上架阶段或少量已知机器。
 
 ### 权限与快捷键
 
