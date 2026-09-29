@@ -41,9 +41,11 @@ npx ray build        # 本机构建（默认 -e dev）；不要加 -e dist
 
 1. 按上面的步骤完成本机导入。
 2. 打开任意命令，若被系统拦截，请到 **系统设置 → 隐私与安全性** 给 Raycast 授权：
-   - **辅助功能**（Accessibility）：窗口枚举 / 读取与移动的必需权限；
-   - **自动化 → System Events**：允许 Raycast 控制 System Events（首次操作时系统会弹窗询问）。
+   - **辅助功能**（Accessibility）：窗口枚举 / 读取与移动的必需权限（windowkit 原生后端与 AppleScript 兜底共用同一授权）；
+   - **自动化 → System Events**：允许 Raycast 控制 System Events（AppleScript 兜底路径使用，首次操作时系统会弹窗询问）。
 3. 可选：给「按上次样式排布」等高频命令在 Raycast 中分配快捷键（命令右键 → Add Hotkey），替代原 Ctrl+Cmd+H。
+
+> 首次使用新版本后，第一次执行命令会触发 windowkit 的原生后端编译（约 1–3 秒，仅一次；产物缓存于 `~/Library/Caches/raycast-window-panel/`），之后每次窗口操作都是毫秒级。编译失败或无 swift 环境时自动回落 AppleScript 后端，功能不受影响。
 
 > 实测说明：窗口位置/大小的写入**不需要**屏幕录制权限（System Events + 辅助功能即可，本机对照实验验证）；屏幕录制仅用于 CGWindowList 的窗口名显示，本扩展未依赖。
 >
@@ -85,13 +87,18 @@ commands/*.tsx (List UI + Toast/Alert)
         ├─ src/templates.ts 模板注册表（15 排布模板 + 2 特殊项 + 12 单窗规格 + MRU 排序）
         ├─ src/geometry.ts  纯几何（splitH/splitV/tiled/slotFrames/cascadeFrames/clampFrame）
         ├─ src/storage.ts   数据文件原子写（tmp+rename）+ LocalStorage 语义（MRU/上次样式/开关）
-        └─ src/provider-applescript.ts  System Events 后端（目标 App 身份 + AXFocusedWindow / AXMainWindow，
-                                           句柄 = unix id + 窗口索引，后台窗口标准过滤，AXFullScreen 拦截）
+        ├─ src/panel-close.ts  写路径前置「关面板」语义（两后端共用 + 1.5s 去重记忆）
+        ├─ src/provider-windowkit.ts  主后端：常驻 swift helper（Hammerspoon 同构）
+        │     ├─ assets/windowkit.swift  原生 AX + NSWorkspace + NSScreen，stdio 换行 JSON 协议
+        │     └─ 首次使用 swiftc 自动编译缓存（~/Library/Caches/raycast-window-panel/），失败回落 ↓
+        └─ src/provider-applescript.ts  兜底后端：System Events（目标 App 身份 + AXFocusedWindow /
+                                          AXMainWindow，句柄 = unix id + 窗口索引，AXFullScreen 拦截）
 ```
 
+- 主后端 windowkit：扩展启动时 spawn 一个常驻 swift 进程，窗口枚举/读写/屏幕全部为进程内原生 API 调用（单次操作 ~1–5ms，与 Hammerspoon 同构），消除 osascript 每次 ~125ms 的进程开销；辅助功能未授权 / 无 swiftc / 编译失败 / 进程崩溃时自动回落 AppleScript 后端；
 - 目标窗口：通过 Raycast 获取唤起前的 App，优先按 bundle ID 定位进程，定向读取 `AXFocusedWindow` / `AXMainWindow`；不再扫描所有 App 后按名字取第一个窗口（多个 Electron 进程可能同名）。无法可靠确定目标时不猜测其他 App 的窗口；
-- 排布 z 序近似：焦点优先 + 前台 App 优先（v1）；P5 计划用 swift helper（CGWindowList 精确 z 序 + 多屏 bounds，扩展内 spawn 已实测 AX 可信）精化；
-- 已知限制：受应用最小窗口尺寸限制（与原版一致）；AppleScript 后端无法移动部分应用拒绝 AX 写入的窗口时会给出提示。
+- 排布 z 序近似：焦点优先 + 前台 App 优先（v1）；CGWindowList 精确 z 序为后续增强；
+- 已知限制：受应用最小窗口尺寸限制（与原版一致）；后端无法移动部分应用拒绝 AX 写入的窗口时会给出提示。
 
 ## 相关文档
 

@@ -141,15 +141,27 @@ interface WindowProvider {
 - **P2** AppleScript provider + 布局命令（window-layout / arrange / arrange-last / window-panel 主菜单）；
 - **P3** 记忆命令（save / forget / restore-app / manage-memories）+ 快照三步曲（保存/重放/两步删除）+ 偏好 + import-from-hammerspoon；
 - **P4** 打磨：toast/错误态（无权限、无焦点窗口、全屏拦截）、图标、README、与 Hammerspoon 版并行实测；
-- **P5**（可选，按需）`swiftc` 小助手 `windowkit`（本机 Swift 6.4 可用，首次自动编译并缓存）：精确 CGWindowList z 序 + 各屏 bounds，排布保真度对齐原版；无 swift 环境自动回落 AppleScript。
+- **P5**（**已落地**）swift 常驻 helper `windowkit`（`assets/windowkit.swift`，首次 `swiftc` 自动编译缓存到 `~/Library/Caches/raycast-window-panel/`）：**主后端**，与 Hammerspoon 同构（进程内原生 AX + NSWorkspace + NSScreen，stdio 换行 JSON 协议）；不可用（无 swiftc/编译失败/辅助功能未授权/进程崩溃）时整体回落 AppleScript。z 序仍为近似（helper 用原生 AX 逐进程枚举；CGWindowList 精确 z 序留作后续增强）。
+
+### 重放路径性能优化（2026-09-25 已落地）
+
+- **按 App 限定枚举**：`listWindowsForApp(bundleId)` 只对目标进程做窗口级 AX 读取；`bundleId` 为空/`unknown` 时回落全量枚举过滤。
+- **轻量身份解析**：面板「重放当前 App」用 `getFrontmostApplication()`（不再先读焦点窗口全属性）；无 bundle id 的 App 退回旧路径。
+- **无记忆早退**：先查数据文件，该 App 无记忆则直接失败返回，不启动任何窗口枚举。
+- **并行读取**：窗口枚举与屏幕读取 `Promise.all` 并行；屏幕缓存 TTL 1s。
+- **批量写入**：一次调用写全部窗口（逐窗隔离、状态回传）；失败项仅重试一次（关面板 + 300ms，只带失败项）；错误号保留供 -10000 权限提示检测。
+- **目标去重 + 跳过原位**：多条旧记忆命中同一窗口只保留第一条；已在目标位置的窗口不写。
+- **windowkit 常驻后端**（P5 落地）：osascript 桥 ~125ms/次（进程 spawn + Apple Events 分发的固定成本）是剩余延迟根因；swift helper 常驻后单次操作 ~1–5ms（原生 AX/NSScreen 进程内直调）。
+- 效果：重放路径从 ~N+3 次 osascript（每次 ~125ms）变为 1–2 次 windowkit 请求（毫秒级往返）；helper 不可用时自动回落 AppleScript。
 
 ## 八、风险与应对
 
 | 风险 | 应对 |
 | --- | --- |
-| 无 Raycast Pro | AppleScript 后端为主；原生 API 代码保留，将来有 Pro 自动启用（`environment.canAccess`） |
+| 无 Raycast Pro | AppleScript 后端为兜底；windowkit（swift）为默认主后端，原生 Pro API 骨架保留（`provider-native.ts`） |
 | Raycast 面板打开时 `frontmost` 语义不确定 | P0 spike 实证；备选：spawn 时 NSWorkspace 探针 / 记录上一次外部焦点 |
-| AppleScript 无真 z 序 / 多屏区域不精确 | v1 近似（焦点优先 + App 优先序）；P5 swift helper 精确化 |
+| windowkit helper 不可用 | 全量回落 AppleScript（无 swiftc/编译失败/辅助功能未授权/进程崩溃）；辅助功能权限为 AX 读写硬性要求（与 Raycast 自带窗口管理同一授权） |
+| AppleScript/windowkit 无真 z 序 / 多屏区域不精确 | v1 近似（焦点优先 + App 优先序）；CGWindowList 精确 z 序为后续增强 |
 | 权限 | 需给 Raycast 授予辅助功能权限（System Events 读写窗口的硬性要求，与 Raycast 自带窗口管理同一授权） |
 | API 行为细节（window id 稳定性、fullscreen 检测） | P2 真实环境验证 |
 | 应用最小窗口尺寸限制 | 与原版一致：实际结果受应用限制，不额外处理 |
