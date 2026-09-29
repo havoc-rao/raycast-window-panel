@@ -16,7 +16,7 @@ import { ensurePanelClosed, resetPanelCloseMemo } from "./panel-close";
 
 const RAYCAST_NAME = "Raycast";
 /** 与 assets/windowkit.swift 的 WINDOWKIT_VERSION 保持一致；不一致时重新编译/重建 helper */
-const WINDOWKIT_VERSION = 4;
+const WINDOWKIT_VERSION = 5;
 const CACHE_DIR = path.join(os.homedir(), "Library", "Caches", "raycast-window-panel");
 const BIN_NAME = "windowkit";
 const SOCK_NAME = "windowkit.sock";

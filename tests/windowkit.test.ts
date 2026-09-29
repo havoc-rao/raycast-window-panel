@@ -47,7 +47,7 @@ describe("windowkit socket 线协议", () => {
   it("ping 往返 + 版本校验", async () => {
     const client = await startClient();
     const pong = await client.request<{ version: number }>("ping");
-    expect(pong.version).toBe(4);
+    expect(pong.version).toBe(5);
     client.stop();
   });
 
@@ -70,7 +70,7 @@ describe("windowkit socket 线协议", () => {
     const client = await startClient();
     await expect(client.request("windows", {}, 100)).rejects.toThrow("超时");
     process.env.WK_DELAY = "0";
-    expect(await client.request("ping")).toEqual({ version: 4 });
+    expect(await client.request("ping")).toEqual({ version: 5 });
     client.stop();
   });
 
@@ -105,7 +105,7 @@ describe("windowkit socket 线协议", () => {
     c1.stop(); // 只断开连接，不杀 daemon
     const c2 = new WindowKitClient(FIXTURE, sockPath);
     expect(await c2.start()).toBe(true); // 复用：不再 spawn
-    expect(await c2.request("ping")).toEqual({ version: 4 });
+    expect(await c2.request("ping")).toEqual({ version: 5 });
     expect(fs.readFileSync(countFile, "utf8")).toBe("1"); // spawn 次数仍为 1
     started.push(c2);
   });

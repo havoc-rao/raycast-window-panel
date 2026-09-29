@@ -18,7 +18,7 @@ import AppKit
 import ApplicationServices
 import Darwin
 
-let WINDOWKIT_VERSION = 4
+let WINDOWKIT_VERSION = 5
 signal(SIGPIPE, SIG_IGN)
 
 let socketPath = ProcessInfo.processInfo.environment["WINDOWKIT_SOCK"] ?? ""
@@ -141,6 +141,14 @@ func matchApps(bundleId: String?, name: String?) -> [NSRunningApplication] {
   }
 }
 
+// 唯一身份匹配不要求 active：Raycast 面板可能已经接管系统焦点。
+// 多进程同身份时只接受唯一 active 候选；不任取第一个窗口。
+func selectTarget<T>(_ candidates: [T], isActive: (T) -> Bool) -> T? {
+  if candidates.count == 1 { return candidates[0] }
+  let active = candidates.filter(isActive)
+  return active.count == 1 ? active[0] : nil
+}
+
 func setFrame(_ el: AXUIElement, _ x: Double, _ y: Double, _ w: Double, _ h: Double) -> String? {
   var p = CGPoint(x: x, y: y)
   var sz = CGSize(width: w, height: h)
@@ -181,10 +189,15 @@ func dispatch(_ op: String, _ params: [String: Any]) -> OpResult {
 
   case "window":
     guard AXIsProcessTrusted() else { return .failure("untrusted") }
-    let app = matchApps(bundleId: params["bundleId"] as? String,
-                        name: params["name"] as? String)
-      .first(where: { $0.isActive }) // 多进程同 bundle 时优先前台（与 AppleScript 一致）
-    guard let target = app else { return .success(NSNull()) }
+    let bundleId = params["bundleId"] as? String
+    let name = params["name"] as? String
+    guard !(bundleId ?? "").isEmpty || !(name ?? "").isEmpty else {
+      return .success(NSNull())
+    }
+    let candidates = matchApps(bundleId: bundleId, name: name)
+    guard let target = selectTarget(candidates, isActive: { $0.isActive }) else {
+      return .success(NSNull())
+    }
     if let w = focusedWindow(of: target) { return .success(w.json) }
     return .success(NSNull())
 
@@ -287,6 +300,9 @@ func serve(_ fd: Int32) {
         cleanup()
         exit(0)
       }
+      // socket read/poll 阻塞主线程；处理积压的 Workspace/AppKit 通知，
+      // 避免常驻进程一直沿用启动时的 runningApplications/isActive 状态。
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.001))
       var resp: [String: Any] = ["id": req["id"] ?? NSNull()]
       switch dispatch(op, req["params"] as? [String: Any] ?? [:]) {
       case .success(let payload):

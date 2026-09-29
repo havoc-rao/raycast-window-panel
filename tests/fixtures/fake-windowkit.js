@@ -50,7 +50,7 @@ const server = net.createServer((conn) => {
       };
       switch (req.op) {
         case "ping":
-          respond({ ok: true, result: { version: Number(process.env.WK_VERSION || 4) } });
+          respond({ ok: true, result: { version: Number(process.env.WK_VERSION || 5) } });
           break;
         case "screens":
           respond({ ok: true, result: [{ x: 0, y: 0, w: 1920, h: 1080 }] });
