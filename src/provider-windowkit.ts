@@ -1,10 +1,11 @@
-// windowkit 主后端：常驻 swift helper（Hammerspoon 同构 —— 进程内原生 AX/NSWorkspace/NSScreen）。
-// 首次使用时 swiftc 编译 assets/windowkit.swift 到缓存目录，spawn 常驻进程，stdio 换行 JSON 协议；
-// 每次窗口操作 = 原生调用 + 微秒级往返（此前 osascript 路径 ~125ms/次固定进程开销）。
+// windowkit 主后端：常驻 swift helper daemon（Hammerspoon 同构 —— 进程内原生 AX/NSWorkspace/NSScreen）。
+// 传输：unix socket + 换行 JSON。helper 由本进程首次 spawn（继承辅助功能信任），之后跨扩展进程存活：
+// 新会话直接连接复用（WINDOWKIT_SOCK 固定路径），不再重复付 spawn 冷启动；空闲 10 分钟 helper 自行退出。
 // 不可用（无 swiftc/编译失败/无辅助功能信任/进程崩溃）时由 actions 回落 AppleScript 后端。
 import { execFile } from "child_process";
-import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
+import { spawn, type ChildProcess } from "child_process";
 import * as fs from "fs";
+import * as net from "net";
 import * as os from "os";
 import * as path from "path";
 import { getFrontmostApplication } from "@raycast/api";
@@ -14,10 +15,12 @@ import type { BoundsWrite, WindowProvider } from "./windows";
 import { ensurePanelClosed, resetPanelCloseMemo } from "./panel-close";
 
 const RAYCAST_NAME = "Raycast";
-/** 与 assets/windowkit.swift 的 WINDOWKIT_VERSION 保持一致；不一致时重新编译 */
-const WINDOWKIT_VERSION = 3;
+/** 与 assets/windowkit.swift 的 WINDOWKIT_VERSION 保持一致；不一致时重新编译/重建 helper */
+const WINDOWKIT_VERSION = 4;
 const CACHE_DIR = path.join(os.homedir(), "Library", "Caches", "raycast-window-panel");
 const BIN_NAME = "windowkit";
+const SOCK_NAME = "windowkit.sock";
+export const SOCKET_PATH = path.join(CACHE_DIR, SOCK_NAME);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -67,50 +70,66 @@ async function doCompileWindowKit(): Promise<string | null> {
   }
 }
 
-/** 常驻进程的线协议客户端：请求/响应配对 + 超时 + 退出兜底 */
+/**
+ * socket 线协议客户端：先尝试复用既有 daemon（跨扩展进程），失败才 spawn 新 helper；
+ * 请求/响应配对 + 超时 + 连接断开兜底。
+ */
 export class WindowKitClient {
-  private proc: ChildProcessWithoutNullStreams | null = null;
+  private socket: net.Socket | null = null;
+  private proc: ChildProcess | null = null;
+  private spawnFailed = false;
   private buffer = "";
   private nextId = 1;
   private pending = new Map<
     number,
     { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
   >();
-  private closed = false;
+  private closed = true;
 
-  constructor(private binary: string, private args: string[] = []) {}
+  constructor(
+    private binary: string,
+    private socketPath: string,
+    private spawnArgs: string[] = []
+  ) {}
 
+  /** 连接复用优先；无可用 daemon 时 spawn（等 socket 就绪，最多 ~8s） */
   async start(): Promise<boolean> {
-    try {
-      this.proc = spawn(this.binary, this.args, { stdio: ["pipe", "pipe", "pipe"] });
-    } catch {
-      return false;
-    }
-    this.closed = false;
-    this.buffer = "";
-    const p = this.proc;
-    p.stdout.setEncoding("utf8");
-    p.stdout.on("data", (chunk: string) => this.onData(chunk));
-    p.stderr.on("data", (chunk: string) => console.debug("[Window Panel windowkit]", String(chunk).trimEnd()));
-    p.on("error", (err) => this.failAll(`windowkit 进程错误: ${err.message}`));
-    p.on("exit", (code, signal) => this.failAll(`windowkit 已退出 (${code ?? signal})`));
-    try {
-      const pong = (await this.request<{ version?: number }>("ping", {}, 5000)) ?? {};
-      if (pong.version !== WINDOWKIT_VERSION) {
-        this.stop();
-        return false;
+    // 1) 复用既有 helper（常驻跨进程）
+    if (await this.connect(700)) {
+      try {
+        const pong = (await this.request<{ version?: number }>("ping", {}, 3000)) ?? {};
+        if (pong.version === WINDOWKIT_VERSION) return true;
+        // 版本不符：让旧实例退出，改 spawn 新版本
+        await this.request("quit", {}, 800).catch(() => {});
+      } catch {
+        /* 旧实例已死 */
       }
-      return true;
-    } catch {
-      this.stop();
-      return false;
+      this.detach();
     }
+    // 2) spawn 新 helper 并等 socket 就绪
+    if (!this.spawnHelper()) return false;
+    for (let i = 0; i < 80; i++) {
+      if (this.spawnFailed) return false;
+      await sleep(100);
+      if (await this.connect(300)) {
+        try {
+          const pong = (await this.request<{ version?: number }>("ping", {}, 3000)) ?? {};
+          if (pong.version === WINDOWKIT_VERSION) return true;
+          await this.request("quit", {}, 800).catch(() => {});
+          this.detach();
+          return false;
+        } catch {
+          this.detach();
+        }
+      }
+    }
+    return false;
   }
 
   request<T = unknown>(op: string, params?: unknown, timeoutMs = 5000): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      const p = this.proc;
-      if (!p || this.closed || !p.stdin.writable) {
+      const sock = this.socket;
+      if (!sock || this.closed || sock.destroyed) {
         reject(new Error("windowkit 通道不可用"));
         return;
       }
@@ -124,7 +143,7 @@ export class WindowKitClient {
         reject,
         timer,
       });
-      p.stdin.write(JSON.stringify({ id, op, params: params ?? {} }) + "\n", (err) => {
+      sock.write(JSON.stringify({ id, op, params: params ?? {} }) + "\n", (err) => {
         if (err) {
           this.pending.delete(id);
           clearTimeout(timer);
@@ -134,23 +153,100 @@ export class WindowKitClient {
     });
   }
 
+  /** 断开连接（helper 常驻保留，供后续会话复用） */
   stop(): void {
-    this.closed = true;
-    const p = this.proc;
-    this.proc = null;
-    if (!p) return;
-    try {
-      p.stdin.write(JSON.stringify({ id: 0, op: "quit", params: {} }) + "\n");
-    } catch {
-      /* 通道已断 */
-    }
-    setTimeout(() => {
+    this.detach();
+  }
+
+  /** 断开并让 helper 退出（版本不符 / untrusted 重建时用） */
+  stopAndQuit(): void {
+    const sock = this.socket;
+    if (sock && !sock.destroyed) {
       try {
-        p.kill();
+        sock.write(JSON.stringify({ id: this.nextId++, op: "quit", params: {} }) + "\n");
       } catch {
-        /* 已退出 */
+        /* 通道已断 */
       }
-    }, 100);
+    }
+    this.detach();
+  }
+
+  // ---- 内部 ----
+
+  private attach(sock: net.Socket): void {
+    this.socket = sock;
+    this.buffer = "";
+    this.closed = false;
+    sock.setEncoding("utf8");
+    sock.on("data", (chunk: string) => this.onData(chunk));
+    sock.on("close", () => {
+      if (this.socket !== sock) return; // 已被 detach 换新
+      this.failAll("windowkit 连接已断开");
+    });
+    sock.on("error", () => {
+      if (this.socket !== sock) return;
+      this.failAll("windowkit 连接出错");
+    });
+  }
+
+  private detach(): void {
+    this.closed = true;
+    const sock = this.socket;
+    this.socket = null;
+    if (sock) {
+      sock.removeAllListeners();
+      sock.destroy();
+    }
+    for (const [, entry] of this.pending) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error("windowkit 通道不可用"));
+    }
+    this.pending.clear();
+  }
+
+  private connect(timeoutMs: number): Promise<boolean> {
+    if (this.socket) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const sock = net.connect({ path: this.socketPath });
+      const timer = setTimeout(() => {
+        sock.destroy();
+        resolve(false);
+      }, timeoutMs);
+      sock.once("connect", () => {
+        clearTimeout(timer);
+        this.attach(sock);
+        resolve(true);
+      });
+      sock.once("error", () => {
+        clearTimeout(timer);
+        sock.destroy();
+        resolve(false);
+      });
+    });
+  }
+
+  private spawnHelper(): boolean {
+    try {
+      this.spawnFailed = false;
+      this.proc = spawn(this.binary, this.spawnArgs, {
+        stdio: ["ignore", "ignore", "pipe"],
+        env: { ...process.env, WINDOWKIT_SOCK: this.socketPath },
+      });
+    } catch {
+      return false;
+    }
+    const p = this.proc;
+    p.stderr?.on("data", (chunk: string) =>
+      console.debug("[Window Panel windowkit]", String(chunk).trimEnd())
+    );
+    p.on("error", (err) => {
+      this.spawnFailed = true;
+      console.debug(`[Window Panel windowkit] 进程错误: ${err.message}`);
+    });
+    p.on("exit", (code, signal) =>
+      console.debug(`[Window Panel windowkit] helper 退出 (${code ?? signal})`)
+    );
+    return true;
   }
 
   private onData(chunk: string): void {
@@ -210,21 +306,35 @@ export class WindowKitProvider implements WindowProvider {
 
   constructor(private client: WindowKitClient) {}
 
-  /** 启动链路：编译/缓存 → spawn → ping → AX 信任探针；任一失败返回 null（回落 AppleScript） */
-  static async create(): Promise<WindowKitProvider | null> {
-    const bin = await compileWindowKit();
+  /**
+   * 启动链路：编译/缓存 → 连接或 spawn → ping → AX 信任探针。
+   * untrusted（孤儿 daemon 可能失去由原扩展进程授予的 AX 信任）→ 重建一次；
+   * 其余失败或两次仍未通过 → 返回 null（回落 AppleScript）。
+   */
+  static async create(opts?: { binary?: string; socketPath?: string }): Promise<WindowKitProvider | null> {
+    const bin = opts?.binary ?? (await compileWindowKit());
     if (!bin) return null;
-    const client = new WindowKitClient(bin);
-    if (!(await client.start())) return null;
+    const sockPath = opts?.socketPath ?? SOCKET_PATH;
     try {
-      // AX 信任探针：辅助功能权限缺失时 helper 的 AX 操作全部失败 → 整体回落 AppleScript
-      const probe = await client.request<unknown[]>("windows", {}, 5000);
-      if (!Array.isArray(probe)) throw new Error("windows 探针异常");
+      fs.mkdirSync(path.dirname(sockPath), { recursive: true });
     } catch {
-      client.stop();
       return null;
     }
-    return new WindowKitProvider(client);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const client = new WindowKitClient(bin, sockPath);
+      if (!(await client.start())) return null;
+      try {
+        const probe = await client.request<unknown[]>("windows", {}, 5000);
+        if (!Array.isArray(probe)) throw new Error("windows 探针异常");
+        return new WindowKitProvider(client);
+      } catch (e) {
+        const untrusted = String((e as Error)?.message ?? e).includes("untrusted");
+        client.stopAndQuit();
+        if (!untrusted) return null; // 非 untrusted 不重试（避免掩盖真实错误）
+        await sleep(400); // 等旧实例清 socket
+      }
+    }
+    return null;
   }
 
   // ---- 读写接口（read 失败返回空/空值并记录，write 失败抛 ProviderError） ----
@@ -349,7 +459,9 @@ export class WindowKitProvider implements WindowProvider {
   }
 
   async setBounds(w: TargetWindow, frame: Frame): Promise<void> {
-    const [pid, index] = w.id.split("|").map((v) => Number(v));
+    const parts = w.id.split("|");
+    const pid = Number(parts[0]);
+    const index = Number(parts[1]);
     if (!Number.isFinite(pid) || !Number.isFinite(index)) {
       throw new ProviderError("窗口句柄失效，请重新打开面板", "no-window");
     }
@@ -368,7 +480,9 @@ export class WindowKitProvider implements WindowProvider {
   async setBoundsBatch(items: BoundsWrite[]): Promise<void> {
     if (items.length === 0) return;
     for (const it of items) {
-      const [pid, index] = it.window.id.split("|").map((v) => Number(v));
+      const parts = it.window.id.split("|");
+      const pid = Number(parts[0]);
+      const index = Number(parts[1]);
       if (!Number.isFinite(pid) || !Number.isFinite(index)) {
         throw new ProviderError("窗口句柄失效，请重新打开面板", "no-window");
       }

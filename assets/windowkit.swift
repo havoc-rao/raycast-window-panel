@@ -1,6 +1,8 @@
-// windowkit · 常驻窗口助手（P5 落地 / 与 Hammerspoon 同构：进程内原生 AX + NSWorkspace + NSScreen）
-// 由 Raycast 扩展进程 spawn（继承辅助功能信任，AX 直读直写；SPIKE §6.1-C 实证 trusted=true）。
-// 协议：stdio 换行 JSON。
+// windowkit · 常驻窗口助手（socket daemon 模式，P5/A+B）
+// 由 Raycast 扩展进程首次 spawn（继承辅助功能信任，AX 直读直写；SPIKE §6.1-C 实证 trusted=true）。
+// 之后跨扩展进程存活：新会话通过 unix socket 复用（WINDOWKIT_SOCK），避免每次冷启动付 spawn 成本。
+// 生命周期：无连接空闲 WINDOWKIT_IDLE_MS（默认 10 分钟）自动退出；SIGINT/SIGTERM/quit 显式退出并清理 socket 文件。
+// 协议：socket 上换行 JSON（与旧 stdio 协议相同）。
 //   请求  {"id":N,"op":"...","params":{...}}
 //   响应  {"id":N,"ok":true,"result":...} | {"id":N,"ok":false,"error":"..."}
 // op：
@@ -10,13 +12,26 @@
 //   screens           → [{x,y,w,h}]（AX 坐标系：主屏原点在左上，y 向下）
 //   setbounds         params {items:[{pid,index,x,y,w,h}]} → [{ok:bool,error?}]
 //   raise             params {pid,index}
-//   quit              → 退出
+//   quit              → 退出并清理 socket
 import Foundation
 import AppKit
 import ApplicationServices
+import Darwin
 
-let WINDOWKIT_VERSION = 3
+let WINDOWKIT_VERSION = 4
 signal(SIGPIPE, SIG_IGN)
+
+let socketPath = ProcessInfo.processInfo.environment["WINDOWKIT_SOCK"] ?? ""
+let idleMs = Int32(ProcessInfo.processInfo.environment["WINDOWKIT_IDLE_MS"] ?? "") ?? 600_000
+
+var serverFd: Int32 = -1
+func cleanup() {
+  if serverFd >= 0 { close(serverFd); serverFd = -1 }
+  if !socketPath.isEmpty { unlink(socketPath) }
+}
+signal(SIGINT) { _ in cleanup(); exit(0) }
+signal(SIGTERM) { _ in cleanup(); exit(0) }
+atexit { cleanup() }
 
 // MARK: - 窗口信息
 
@@ -224,35 +239,89 @@ func dispatch(_ op: String, _ params: [String: Any]) -> OpResult {
     }
     return .success(NSNull())
 
-  case "quit":
-    exit(0)
-
   default:
     return .failure("unknown-op: " + op)
   }
 }
 
-// MARK: - 主循环（顺序处理，一次一个请求；TS 侧排队）
+// MARK: - socket 服务
 
-while let line = readLine() {
-  guard !line.isEmpty,
-        let data = line.data(using: .utf8),
-        let req = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-        let id = req["id"],
-        let op = req["op"] as? String else { continue }
-  let params = req["params"] as? [String: Any] ?? [:]
-  var resp: [String: Any] = ["id": id]
-  switch dispatch(op, params) {
-  case .success(let payload):
-    resp["ok"] = true
-    resp["result"] = payload
-  case .failure(let err):
-    resp["ok"] = false
-    resp["error"] = err
+func makeServer(_ path: String) -> Int32? {
+  unlink(path) // 清理上次崩溃残留
+  let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+  guard fd >= 0 else { return nil }
+  var addr = sockaddr_un()
+  addr.sun_family = sa_family_t(AF_UNIX)
+  let cPath = (path as NSString).fileSystemRepresentation
+  _ = strlcpy(&addr.sun_path, cPath, MemoryLayout.size(ofValue: addr.sun_path))
+  let size = socklen_t(MemoryLayout<sockaddr_un>.size)
+  let rc = withUnsafePointer(to: &addr) { ptr in
+    ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, size) }
   }
-  if let d = try? JSONSerialization.data(withJSONObject: resp),
-     let s = String(data: d, encoding: .utf8) {
-    print(s)
-    fflush(stdout)
+  guard rc == 0 else { close(fd); return nil }
+  guard listen(fd, 8) == 0 else { close(fd); return nil }
+  return fd
+}
+
+/// 顺序处理单个连接（一次一个请求；TS 侧排队），读到 EOF 返回
+func serve(_ fd: Int32) {
+  var buf = Data()
+  var temp = [UInt8](repeating: 0, count: 8192)
+  while true {
+    let n = read(fd, &temp, temp.count)
+    if n <= 0 { break }
+    buf.append(contentsOf: temp[..<n])
+    while let nl = buf.firstIndex(of: 0x0A) {
+      let line = Data(buf[..<nl])
+      buf.removeSubrange(buf.startIndex...nl)
+      guard !line.isEmpty,
+            let req = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
+            let op = req["op"] as? String else { continue }
+      if op == "quit" {
+        // 先回响应再退出，避免客户端等待挂起
+        if let d = try? JSONSerialization.data(withJSONObject: ["id": req["id"] ?? NSNull(), "ok": true, "result": NSNull()]) {
+          var out = d
+          out.append(0x0A)
+          out.withUnsafeBytes { _ = write(fd, $0.baseAddress, out.count) }
+        }
+        cleanup()
+        exit(0)
+      }
+      var resp: [String: Any] = ["id": req["id"] ?? NSNull()]
+      switch dispatch(op, req["params"] as? [String: Any] ?? [:]) {
+      case .success(let payload):
+        resp["ok"] = true
+        resp["result"] = payload
+      case .failure(let err):
+        resp["ok"] = false
+        resp["error"] = err
+      }
+      if let d = try? JSONSerialization.data(withJSONObject: resp) {
+        var out = d
+        out.append(0x0A)
+        out.withUnsafeBytes { _ = write(fd, $0.baseAddress, out.count) }
+      }
+    }
   }
+}
+
+// MARK: - 主循环（空闲超时退出；期间可被新会话复用）
+
+if socketPath.isEmpty {
+  FileHandle.standardError.write("WINDOWKIT_SOCK 未设置\n".data(using: .utf8)!)
+  exit(1)
+}
+guard let fd = makeServer(socketPath) else {
+  FileHandle.standardError.write("windowkit socket 绑定失败（可能已有实例）\n".data(using: .utf8)!)
+  exit(1)
+}
+serverFd = fd
+while true {
+  var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+  let rc = poll(&pfd, 1, idleMs)
+  if rc <= 0 { break } // 空闲超时 / poll 错误 → 退出
+  let client = accept(fd, nil, nil)
+  if client < 0 { continue }
+  serve(client)
+  close(client)
 }
