@@ -1,35 +1,19 @@
 // AppleScript 窗口后端（System Events；需辅助功能权限，写入仍受应用自身约束）
 // 目标窗口 = Raycast 识别的前台 App 内的 AXFocusedWindow / AXMainWindow；不猜测其他 App。
 // 窗口句柄 = 进程 unix id + 窗口索引；z 序近似 = 焦点优先 + App 优先；全屏/最小化标记随枚举返回。
+// 面板关闭策略见 panel-close.ts（对照实验结论：写入前关面板是 UX 一致性，不是成败前提）。
 import type { Frame, Region, Screen, TargetWindow } from "./types";
 import { appleScriptQuote, runOsascript } from "./osascript";
 import { ProviderError } from "./windows";
-import type { WindowProvider } from "./windows";
-import { closeMainWindow, getFrontmostApplication } from "@raycast/api";
+import type { BoundsWrite, WindowProvider } from "./windows";
+import { getFrontmostApplication } from "@raycast/api";
+import { ensurePanelClosed, resetPanelCloseMemo } from "./panel-close";
 
 /** 窗口枚举行字段分隔符（控制字符 US，避免与标题冲突） */
 const SEP = "\u001f";
 const RAYCAST_NAME = "Raycast";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/**
- * 生产写路径的前置：先关面板再写。
- * 对照实验结论（SPIKE.md §6/§7）：面板打开与否不影响写入（正确写法下均成功），
- * 但保留「先关面板」策略 = 与原版 Hammerspoon「关面板→回焦→执行」一致的 UX，并在
- * 个别环境存在状态门控时由写入失败后的延迟重试作为防御。
- * 模块级记忆：最近 1500ms 已关闭时跳过；耗时较长的排布仍可能再次关闭。
- */
-let lastPanelCloseAt = 0;
-async function ensurePanelClosed(): Promise<void> {
-  if (Date.now() - lastPanelCloseAt < 1500) return;
-  try {
-    await closeMainWindow();
-  } catch {
-    /* 忽略：no-view 等场景 close 可能为 no-op */
-  }
-  lastPanelCloseAt = Date.now();
-}
 
 interface RawWindow {
   pid: number;
@@ -48,7 +32,11 @@ interface RawWindow {
   index: number;
 }
 
-const ENUMERATE_SCRIPT = `
+const ENUMERATE_SCRIPT = (bundleId?: string): string => {
+  // bundleId 提供时只对匹配进程做窗口级 AX 读取（进程级属性仍全量轻扫，
+  // 保证与全量枚举一致的健壮性：whose 过滤无法包 try，且有进程 bundle identifier 读取会抛错）。
+  const guard = bundleId ? `if pbid is "${appleScriptQuote(bundleId)}"` : `if true`;
+  return `
 set SEP to character id 31
 set out to {}
 tell application "System Events"
@@ -59,6 +47,7 @@ tell application "System Events"
       try
         set pbid to bundle identifier of p
       end try
+      ${guard} then
       set ppid to unix id of p
       set windex to 0
       repeat with w in (every window of p)
@@ -97,19 +86,21 @@ tell application "System Events"
         end try
         set end of out to (ppid as text) & SEP & pname & SEP & pbid & SEP & wtitle & SEP & (wx as text) & SEP & (wy as text) & SEP & (ww as text) & SEP & (wh as text) & SEP & wsub & SEP & wfull & SEP & wmin & SEP & wres
       end repeat
+      end if
     end try
   end repeat
 end tell
 set AppleScript's text item delimiters to linefeed
 return out as text
 `;
+};
 
 export class AppleScriptWindowProvider implements WindowProvider {
   private screenCache: { screens: Screen[]; expiresAt: number } | null = null;
   private screenRead: Promise<Screen[] | null> | null = null;
 
-  async enumerateWindows(): Promise<RawWindow[]> {
-    const r = await runOsascript(ENUMERATE_SCRIPT, "AppleScript");
+  async enumerateWindows(bundleId?: string): Promise<RawWindow[]> {
+    const r = await runOsascript(ENUMERATE_SCRIPT(bundleId), "AppleScript");
     if (!r.ok) return [];
     const out: RawWindow[] = [];
     const perProcess = new Map<number, number>();
@@ -286,7 +277,18 @@ end tell`,
   }
 
   async listAllWindows(): Promise<TargetWindow[]> {
-    const raws = await this.enumerateWindows();
+    return this.filterStandard(await this.enumerateWindows());
+  }
+
+  // 重放专用：只枚举目标 App 的窗口；bundleId 为空或 "unknown"（无 bundle 的历史记忆）
+  // 时无法在脚本内定位进程 → 回落全量枚举后过滤（与旧语义一致）。
+  async listWindowsForApp(bundleId: string): Promise<TargetWindow[]> {
+    const scoped = bundleId && bundleId !== "unknown";
+    const raws = await this.enumerateWindows(scoped ? bundleId : undefined);
+    return this.filterStandard(raws);
+  }
+
+  private filterStandard(raws: RawWindow[]): TargetWindow[] {
     return raws
       .filter((w) => w.appName !== RAYCAST_NAME && !w.minimized && this.isStandard(w))
       .map((w) => this.toTargetWindow(w));
@@ -373,7 +375,7 @@ out.join("|");
     const r = await this.writeBounds(pid, index, frame);
     if (!(r.ok && r.output === "OK")) {
       // 偶发失败重试一次：重置面板关闭记忆 + 等待 300ms 后重写
-      lastPanelCloseAt = 0;
+      resetPanelCloseMemo();
       await sleep(300);
       await ensurePanelClosed();
       const r2 = await this.writeBounds(pid, index, frame);
@@ -403,6 +405,72 @@ out.join("|");
   end try
 end tell`;
     return runOsascript(script, "AppleScript");
+  }
+
+  /** 批量写入：一次 osascript 调用写全部窗口，逐窗 try 隔离失败；返回失败的条目供重试 */
+  async setBoundsBatch(items: BoundsWrite[]): Promise<void> {
+    if (items.length === 0) return;
+    await ensurePanelClosed();
+    const failed = await this.writeBoundsBatch(items);
+    if (failed.length > 0) {
+      // 偶发失败整体重试一次（仅失败项）：重置面板关闭记忆 + 等待 300ms 后重写
+      resetPanelCloseMemo();
+      await sleep(300);
+      await ensurePanelClosed();
+      const still = await this.writeBoundsBatch(failed);
+      if (still.length > 0) {
+        const err = still[0].error;
+        const hint = /-?10000|处理程序失败/.test(err)
+          ? `窗口移动被系统拒绝（-10000）：System Events 写入异常，请确认已给 Raycast 辅助功能权限后重试 (${err.replace(/\n/g, " ").slice(0, 120)})`
+          : `部分窗口（${still.length}/${items.length}）写入失败：${err.replace(/\n/g, " ").slice(0, 160)}`;
+        throw new ProviderError(hint, "generic");
+      }
+    }
+  }
+
+  private async writeBoundsBatch(items: BoundsWrite[]): Promise<Array<BoundsWrite & { error: string }>> {
+    if (items.length === 0) return [];
+    const body = items
+      .map((it, i) => {
+        const [pid, index] = it.window.id.split("|").map((v) => Number(v));
+        if (!Number.isFinite(pid) || !Number.isFinite(index)) {
+          return `set item${i} to "ERR|0|invalid-handle"
+  set end of out to item${i}`;
+        }
+        return `  try
+    set p to a reference to (first application process whose unix id is ${pid})
+    set position of window ${index} of p to {${it.frame.x}, ${it.frame.y}}
+    set size of window ${index} of p to {${it.frame.w}, ${it.frame.h}}
+    set item${i} to "OK"
+  on error errMsg number errNum
+    set item${i} to "ERR|" & errNum & "|" & errMsg
+  end try
+  set end of out to item${i}`;
+      })
+      .join("\n");
+    const script = `set SEP to character id 31
+set out to {}
+tell application "System Events"
+${body}
+end tell
+set AppleScript's text item delimiters to SEP
+return out as text`;
+    const r = await runOsascript(script, "AppleScript");
+    if (!r.ok) {
+      // 整个脚本失败（罕见）：按旧语义全部视为失败，报第一条错误
+      return items.map((it) => ({ ...it, error: r.error || "osascript 调用失败" }));
+    }
+    const statuses = r.output.split(SEP);
+    const failed: Array<BoundsWrite & { error: string }> = [];
+    for (let i = 0; i < items.length; i++) {
+      const st = statuses[i] ?? "ERR|0|no-result";
+      if (st !== "OK") {
+        // 保留错误号（-10000 等），供权限提示检测；只去掉 "ERR|" 前缀
+        const err = st.startsWith("ERR|") ? st.slice(4) : st || "未知错误";
+        failed.push({ ...items[i], error: err });
+      }
+    }
+    return failed;
   }
 
   async raise(w: TargetWindow): Promise<void> {

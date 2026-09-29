@@ -17,17 +17,19 @@ import { MemoryStore, readLayoutsFile, writeLayoutsFile } from "./storage";
 import { raycastKV } from "./local-storage-adapter";
 import { getMemoryTargetEnabledPref, layoutsFilePath } from "./prefs";
 import { AppleScriptWindowProvider } from "./provider-applescript";
-import { createNativeProvider } from "./provider-native";
+import { WindowKitProvider } from "./provider-windowkit";
 import { ProviderError } from "./windows";
-import type { WindowProvider } from "./windows";
+import type { BoundsWrite, WindowProvider } from "./windows";
 import { timed } from "./timing";
 
 let providerPromise: Promise<WindowProvider> | null = null;
 export function getProvider(): Promise<WindowProvider> {
   if (!providerPromise) {
     providerPromise = (async () => {
-      const native = await createNativeProvider();
+      // 主后端：windowkit 常驻原生 helper（Hammerspoon 同构）；不可用回落 AppleScript
+      const native = await timed("provider.init-windowkit", () => WindowKitProvider.create());
       if (native) return native;
+      console.debug("[Window Panel timing] provider.init-windowkit fallback-to-applescript");
       return new AppleScriptWindowProvider();
     })();
   }
@@ -196,22 +198,40 @@ export async function forgetWindowCommand(): Promise<ActionResult> {
   return ok(r.message);
 }
 
-/** 重放某 App 的全部已记忆窗口（restore-app / manage-memories 共用） */
+/** 重放某 App 的全部已记忆窗口（window-panel / restore-app / manage-memories 共用）
+ *  性能路径：无记忆早退（不枚举窗口）→ 按 App 限定枚举 + 屏幕读取并行 → 匹配去重后批量写入。 */
 export async function replayAppCommand(bundleId: string, appName?: string): Promise<ActionResult> {
-  const p = await getProvider();
-  const all = await p.listAllWindows();
-  const screens = await p.getAllScreens();
   const data = loadLayouts();
+  const label = appName ?? bundleId;
+  const records = Object.values(data.windows).filter((r) => r.bundleID === bundleId);
+  if (records.length === 0) return fail("该 app 没有记忆的窗口: " + label);
+
+  const p = await getProvider();
+  // bundleId 为空/"unknown"（无 bundle 的历史记忆）时无法在脚本内定位进程 → 回落全量枚举过滤
+  const scoped = bundleId !== "" && bundleId !== "unknown";
+  const [all, screens] = await timed("replay.lookup", () =>
+    Promise.all([scoped ? p.listWindowsForApp(bundleId) : p.listAllWindows(), p.getAllScreens()])
+  );
   const plan = replayAppWindows(data, bundleId, all, screens);
-  if (!plan.ok) return fail(plan.message);
+  if (!plan.ok) return fail(plan.message.replace(bundleId, label));
+  // 已在目标位置的窗口跳过（位置一致就不写，省一次 AX 写）
+  const writes: BoundsWrite[] = [];
   for (let i = 0; i < plan.windows.length; i++) {
-    try {
-      await p.setBounds(plan.windows[i], plan.frames[i]);
-    } catch (e) {
-      return providerFail(e);
-    }
+    const w = plan.windows[i];
+    const f = plan.frames[i];
+    const same =
+      Math.abs(w.bounds.x - f.x) < 1 &&
+      Math.abs(w.bounds.y - f.y) < 1 &&
+      Math.abs(w.bounds.w - f.w) < 1 &&
+      Math.abs(w.bounds.h - f.h) < 1;
+    if (!same) writes.push({ window: w, frame: f });
   }
-  return ok(plan.message.replace(bundleId, appName ?? bundleId));
+  try {
+    await timed("replay.write", () => p.setBoundsBatch(writes));
+  } catch (e) {
+    return providerFail(e);
+  }
+  return ok(plan.message.replace(bundleId, label));
 }
 
 /** 一键按上次样式排布（原始主列表 Enter 路径：无模板交互） */
