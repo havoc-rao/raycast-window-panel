@@ -251,7 +251,9 @@ export function replayAppWindows(
   for (const info of Object.values(layouts.windows)) {
     if (info.bundleID === bundleId) {
       const target = findWindowFor(info, allWindows);
-      if (target) {
+      // 目标去重：多条旧记忆（标题已变的兜底）可能命中同一窗口，只保留第一条，
+      // 避免同一窗口被连续写成不同位置（重复写既慢又产生跳变）。
+      if (target && !windows.some((w) => w.id === target.id)) {
         windows.push(target);
         frames.push(clampFrame(info.frame, screens));
         count += 1;
