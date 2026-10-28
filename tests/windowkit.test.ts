@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { closeMainWindow, getFrontmostApplication } from "@raycast/api";
-import { WindowKitClient, WindowKitProvider } from "../src/provider-windowkit";
+import { WindowKitClient, WindowKitProvider } from "../src/services/windows/provider-windowkit";
 
 vi.mock("@raycast/api", () => ({ getFrontmostApplication: vi.fn(), closeMainWindow: vi.fn() }));
 

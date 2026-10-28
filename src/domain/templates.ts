@@ -1,7 +1,7 @@
 // 模板注册表：从 init.lua 的 layoutTemplates + single-layout.lua 1:1 移植。
 // 新增模板 = 追加一条记录（与 Lua 版约定一致：fn 为纯几何函数、minN/maxN 声明适用窗口数、order 控制排序）。
 import type { Frame, Region, Template } from "./types";
-import { EDGE_TWO, GAP, cascadeFrames, slotFrames, splitH, splitV, tiled } from "./geometry";
+import { EDGE_TWO, GAP, cascadeFrames, slotFrames, splitH, splitV, tiled } from "../utils/geometry";
 
 // ---- 排布模板（自动排布用） ----
 export const layoutTemplates: Template[] = [

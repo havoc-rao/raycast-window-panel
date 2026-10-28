@@ -1,7 +1,6 @@
 // 命令层业务编排：目标解析 → 引擎计划 → provider 执行 → 持久化/MRU → 反馈文案
 // 全部动作返回 {ok, message}，命令层负责 Toast/Alert/关闭面板。
-import { closeMainWindow, showToast, Toast } from "@raycast/api";
-import type { LayoutsData, TargetWindow } from "./types";
+import type { LayoutsData, TargetWindow } from "../domain/types";
 import {
   deleteSnapshot,
   doArrange,
@@ -10,75 +9,21 @@ import {
   makeArrangeContext,
   replayAppWindows,
   saveCurWindow,
-} from "./engine";
-import { clampFrame } from "./geometry";
-import { singleLayoutById, templateById } from "./templates";
-import { MemoryStore, readLayoutsFile, writeLayoutsFile } from "./storage";
-import { raycastKV } from "./local-storage-adapter";
-import { getMemoryTargetEnabledPref, layoutsFilePath } from "./prefs";
-import { AppleScriptWindowProvider } from "./provider-applescript";
-import { WindowKitProvider } from "./provider-windowkit";
-import { ProviderError } from "./windows";
-import type { BoundsWrite, WindowProvider } from "./windows";
-import { timed } from "./timing";
-
-let providerPromise: Promise<WindowProvider> | null = null;
-export function getProvider(): Promise<WindowProvider> {
-  if (!providerPromise) {
-    providerPromise = (async () => {
-      // 主后端：windowkit 常驻原生 helper（Hammerspoon 同构）；不可用回落 AppleScript
-      const native = await timed("provider.init-windowkit", () => WindowKitProvider.create());
-      if (native) return native;
-      console.debug("[Window Panel timing] provider.init-windowkit fallback-to-applescript");
-      return new AppleScriptWindowProvider();
-    })();
-  }
-  return providerPromise;
-}
-
-// 预热：命令装载即在后台初始化 provider —— 面板打开/用户浏览菜单期间完成 helper
-// 连接或 spawn，点击执行时不再付冷启动（windowkit daemon 跨进程常驻，会话间复用）。
-void getProvider().catch(() => {
-  /* 回落 AppleScript 的路径由 getProvider 内部处理，这里只是兜底 */
-});
-
-export const memory = new MemoryStore(raycastKV);
-
-export interface ActionResult {
-  ok: boolean;
-  message: string;
-}
-
-export function ok(message: string): ActionResult {
-  return { ok: true, message };
-}
-
-export function fail(message: string): ActionResult {
-  return { ok: false, message };
-}
+} from "../domain/engine";
+import { clampFrame } from "../utils/geometry";
+import { singleLayoutById, templateById } from "../domain/templates";
+import { getMemoryTargetEnabledPref } from "./preferences";
+import { ProviderError } from "./windows/types";
+import type { BoundsWrite } from "./windows/types";
+import { getProvider } from "./windows/provider";
+import { loadLayouts, memory, persistLayouts } from "./storage/repository";
+import { fail, ok } from "./action-result";
+import type { ActionResult } from "./action-result";
+import { timed } from "../utils/timing";
 
 function providerFail(e: unknown): ActionResult {
   if (e instanceof ProviderError) return fail(e.message);
   return fail(String((e as Error)?.message ?? e));
-}
-
-/** 布局数据文件读写（原子写）；读失败按空数据处理，写失败抛出 → Toast 失败 */
-export function loadLayouts(): LayoutsData {
-  return readLayoutsFile(layoutsFilePath());
-}
-
-export function persistLayouts(data: LayoutsData): void {
-  writeLayoutsFile(layoutsFilePath(), data);
-}
-
-/** 统一反馈：Toast + 可选关闭面板（执行型动作关面板 → 焦点回到目标 App，与原版一致） */
-export async function notify(result: ActionResult, opts?: { close?: boolean; title?: string }): Promise<void> {
-  await showToast({
-    style: result.ok ? Toast.Style.Success : Toast.Style.Failure,
-    title: opts?.title ?? (result.ok ? result.message : result.message),
-    message: result.ok ? undefined : undefined,
-  });
-  if (result.ok && opts?.close) await closeMainWindow();
 }
 
 export async function resolveTarget(): Promise<TargetWindow | null> {
@@ -254,13 +199,6 @@ export function rememberedApps(data: LayoutsData): Array<{ bundleId: string; nam
     else byApp.set(rec.bundleID, { bundleId: rec.bundleID, name: rec.bundleID, count: 1 });
   }
   return [...byApp.values()];
-}
-
-/** bundleID → 可读短名（记忆里没有存 App 名，取最后一节） */
-export function shortAppName(bundleId: string): string {
-  const seg = bundleId.split(".").filter(Boolean);
-  const last = seg[seg.length - 1] ?? bundleId;
-  return last.charAt(0).toUpperCase() + last.slice(1);
 }
 
 /** 单条记忆重放（manage-memories 用）：按匹配链找窗口并套用其记忆帧 */

@@ -1,5 +1,5 @@
 // Provider 接口（薄适配层）：两个后端实现同样的语义；运行时自动选择（AppleScript 主后端 / 原生 Pro API 骨架）
-import type { Frame, Region, Screen, TargetWindow } from "./types";
+import type { Frame, Region, Screen, TargetWindow } from "../../domain/types";
 
 export interface WindowProvider {
   /** 唤起前目标 App 的焦点窗口；无法确定时返回 null，不猜测其他 App 的窗口 */

@@ -2,10 +2,10 @@
 // 目标窗口 = Raycast 识别的前台 App 内的 AXFocusedWindow / AXMainWindow；不猜测其他 App。
 // 窗口句柄 = 进程 unix id + 窗口索引；z 序近似 = 焦点优先 + App 优先；全屏/最小化标记随枚举返回。
 // 面板关闭策略见 panel-close.ts（对照实验结论：写入前关面板是 UX 一致性，不是成败前提）。
-import type { Frame, Region, Screen, TargetWindow } from "./types";
-import { appleScriptQuote, runOsascript } from "./osascript";
-import { ProviderError } from "./windows";
-import type { BoundsWrite, WindowProvider } from "./windows";
+import type { Frame, Region, Screen, TargetWindow } from "../../domain/types";
+import { appleScriptQuote, runOsascript } from "../../utils/osascript";
+import { ProviderError } from "./types";
+import type { BoundsWrite, WindowProvider } from "./types";
 import { getFrontmostApplication } from "@raycast/api";
 import { ensurePanelClosed, resetPanelCloseMemo } from "./panel-close";
 

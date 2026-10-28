@@ -3,9 +3,12 @@
 // 「重放我的布局」附两步删除（Alert 确认）；重放副标题动态显示上次槽位数。
 import { Action, ActionPanel, Alert, Icon, List, confirmAlert } from "@raycast/api";
 import { useEffect, useState } from "react";
-import { deleteMyLayout, getProvider, loadLayouts, memory, notify, runArrange } from "../actions";
-import { makeArrangeContext } from "../engine";
-import { defaultTemplateFor, templatesForOrdered, templateById } from "../templates";
+import { deleteMyLayout, runArrange } from "../services/actions";
+import { getProvider } from "../services/windows/provider";
+import { loadLayouts, memory } from "../services/storage/repository";
+import { notify } from "./feedback";
+import { makeArrangeContext } from "../domain/engine";
+import { defaultTemplateFor, templatesForOrdered, templateById } from "../domain/templates";
 
 export interface ArrangePickerContext {
   count: number;

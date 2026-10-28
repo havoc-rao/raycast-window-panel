@@ -1,6 +1,6 @@
 // 纯几何函数：从 ~/.hammerspoon/init.lua 1:1 移植（splitH/splitV/tiled/slotFrames/cascadeFrames/clampFrame）
 // 与 Lua 版约束一致：纯函数、无副作用，预览图与执行引擎共用同一实现。
-import type { Frame, Region, Screen } from "./types";
+import type { Frame, Region, Screen } from "../domain/types";
 
 /** 两窗方案专用的观察缝（更宽，方便看后台窗口） */
 export const EDGE_TWO = 60;

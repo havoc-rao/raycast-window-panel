@@ -6,7 +6,7 @@
 import { List } from "@raycast/api";
 import { closeMainWindow } from "@raycast/api";
 import { useEffect, useState } from "react";
-import { runOsascript } from "./osascript";
+import { runOsascript } from "../utils/osascript";
 import { frontmostInfo, inlineIdiomScript, literalWriteScript, logRow, panelState, runProbeScript, firstOtherWindow, sleep } from "./spike-write-probe";
 
 async function readFrontWindowFrame(pid: number): Promise<{ x: number; y: number; w: number; h: number }> {

@@ -2,8 +2,10 @@
 // 组顺序固定（全屏类/半屏类/1/4 类），组内最近用过置前（带「最近」标记）
 import { Action, ActionPanel, Icon, List } from "@raycast/api";
 import { useEffect, useState } from "react";
-import { applySingleLayout, memory, notify } from "../actions";
-import { singleGroupOrder, singleLayoutById, singleLayoutTemplates, singleTemplatesOrdered } from "../templates";
+import { applySingleLayout } from "../services/actions";
+import { memory } from "../services/storage/repository";
+import { notify } from "./feedback";
+import { singleGroupOrder, singleLayoutById, singleLayoutTemplates, singleTemplatesOrdered } from "../domain/templates";
 
 const ACCENT = "#3478f6";
 

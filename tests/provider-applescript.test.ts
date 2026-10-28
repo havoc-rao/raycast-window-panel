@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeMainWindow, getFrontmostApplication } from "@raycast/api";
-import { runOsascript } from "../src/osascript";
-import { AppleScriptWindowProvider } from "../src/provider-applescript";
+import { runOsascript } from "../src/utils/osascript";
+import { AppleScriptWindowProvider } from "../src/services/windows/provider-applescript";
 
 vi.mock("@raycast/api", () => ({ getFrontmostApplication: vi.fn(), closeMainWindow: vi.fn() }));
-vi.mock("../src/osascript", async (original) => ({
-  ...await original<typeof import("../src/osascript")>(), runOsascript: vi.fn(),
+vi.mock("../src/utils/osascript", async (original) => ({
+  ...await original<typeof import("../src/utils/osascript")>(), runOsascript: vi.fn(),
 }));
 
 const SEP = "\u001f";

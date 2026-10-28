@@ -2,11 +2,11 @@
 //   a 组：生产写法（字面量）连跑 3 次，应稳定成功
 //   生产路径最终验证：provider.setBounds（含 ensurePanelClosed → closeMainWindow+250ms → 字面量写）连跑 3 次
 import { closeMainWindow } from "@raycast/api";
-import { AppleScriptWindowProvider } from "./provider-applescript";
+import { AppleScriptWindowProvider } from "../services/windows/provider-applescript";
 import { frontmostInfo, literalWriteScript, logRow, runProbeScript, sleep } from "./spike-write-probe";
 
 async function readFrame(pid: number): Promise<{ x: number; y: number; w: number; h: number }> {
-  const r = await import("./osascript").then((m) =>
+  const r = await import("../utils/osascript").then((m) =>
     m.runOsascript(
       `tell application "System Events"\n  set p to first application process whose unix id is ${pid}\n  set wpos to position of window 1 of p\n  set wsz to size of window 1 of p\n  return (item 1 of wpos as text) & "," & (item 2 of wpos as text) & "," & (item 1 of wsz as text) & "," & (item 2 of wsz as text)\nend tell`,
       "AppleScript"

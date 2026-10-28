@@ -11,8 +11,8 @@ import {
   splitH,
   splitV,
   tiled,
-} from "../src/geometry";
-import type { Frame } from "../src/types";
+} from "../src/utils/geometry";
+import type { Frame } from "../src/domain/types";
 
 // 1440×900 全屏区域（主屏常见分辨率），GAP=4，EDGE_TWO=60
 const R0 = { x: 0, y: 0, w: 1440, h: 900 };

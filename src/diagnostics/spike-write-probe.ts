@@ -1,8 +1,8 @@
 // [dev] 第 3 轮写窗口对照探针共享逻辑：面板状态记录 + 三种写脚本形式
 import * as fs from "fs";
 import * as path from "path";
-import { runOsascript } from "./osascript";
-import { AppleScriptWindowProvider } from "./provider-applescript";
+import { runOsascript } from "../utils/osascript";
+import { AppleScriptWindowProvider } from "../services/windows/provider-applescript";
 
 const OUT_FILE = "/Users/havoc/Documents/Projects/tools/macOS/raycast-window-panel/.cache/spike/writecheck.jsonl";
 

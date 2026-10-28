@@ -2,7 +2,7 @@
 // saveCurWindow / forgetWindow / replayByApp / findWindow 匹配链。
 // 纯函数/数据变换：不触碰窗口对象、不读写存储；命令层负责 setBounds、持久化与反馈。
 import type { Frame, LayoutsData, Region, Screen, TargetWindow, Template, WindowRecord } from "./types";
-import { clampFrame } from "./geometry";
+import { clampFrame } from "../utils/geometry";
 import { defaultTemplateFor, templateApplies, templateById } from "./templates";
 
 /** 窗口标识：bundleID|标题（数据文件键） */

@@ -2,7 +2,7 @@
 // 纯 Node（fs），不依赖 Raycast API；命令层把 Raycast LocalStorage 适配为 KVStore。
 import * as fs from "fs";
 import * as path from "path";
-import type { LayoutsData, Snapshot, WindowRecord } from "./types";
+import type { LayoutsData, Snapshot, WindowRecord } from "../../domain/types";
 
 /** hs.settings key 语义 1:1（原版 windowPanel.* 前缀保留） */
 export const RECENT_KEY = "windowPanel.arrangeRecent";

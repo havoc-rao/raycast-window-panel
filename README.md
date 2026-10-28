@@ -91,8 +91,8 @@ npx ray build        # 本机构建（默认 -e dev）；不要加 -e dist
 
 ## 常用配置
 
-- 排列参数见 `src/geometry.ts`：`EDGE_TWO`（两窗露条宽度，默认 60）、`GAP`（分屏缝宽，默认 4）。
-- 新增排布模板 = 在 `src/templates.ts` 的 `layoutTemplates` 追加一条记录（`minN/maxN/order/keywords/fn` 纯几何函数），无需改 UI/引擎。
+- 排列参数见 [geometry.ts](src/utils/geometry.ts)：`EDGE_TWO`（两窗露条宽度，默认 60）、`GAP`（分屏缝宽，默认 4）。
+- 新增排布模板 = 在 [templates.ts](src/domain/templates.ts) 的 `layoutTemplates` 追加一条记录（`minN/maxN/order/keywords/fn` 纯几何函数），无需改 UI/引擎。
 
 ## 开发
 
@@ -107,20 +107,43 @@ npx ray develop        # 注册进 Raycast 开发调试，监听源码变化（n
 ## 架构
 
 ```text
-commands/*.tsx (List UI + Toast/Alert)
-   └─ src/actions.ts        业务编排（目标解析 → 引擎计划 → provider 执行 → 持久化/MRU）
-        ├─ src/engine.ts    排布/记忆/快照业务（移植 init.lua：豁免划分、模板套用、匹配链）
-        ├─ src/templates.ts 模板注册表（15 排布模板 + 2 特殊项 + 12 单窗规格 + MRU 排序）
-        ├─ src/geometry.ts  纯几何（splitH/splitV/tiled/slotFrames/cascadeFrames/clampFrame）
-        ├─ src/storage.ts   数据文件原子写（tmp+rename）+ LocalStorage 语义（MRU/上次样式/开关）
-        ├─ src/panel-close.ts  写路径前置「关面板」语义（两后端共用 + 1.5s 去重记忆）
-        ├─ src/provider-windowkit.ts  主后端：常驻 swift helper daemon（Hammerspoon 同构）
-        │     ├─ assets/windowkit.swift  原生 AX + NSWorkspace + NSScreen，unix socket + 换行 JSON 协议
-        │     ├─ 首次使用 swiftc 自动编译缓存（~/Library/Caches/raycast-window-panel/），失败回落 ↓
-        │     └─ socket daemon 跨扩展进程存活（空闲 10 分钟自动退出；孤儿失去 AX 信任自动重建）
-        └─ src/provider-applescript.ts  兜底后端：System Events（目标 App 身份 + AXFocusedWindow /
-                                          AXMainWindow，句柄 = unix id + 窗口索引，AXFullScreen 拦截）
+src/
+├─ *.tsx                       Raycast 命令薄入口（文件名与 manifest 命令保持一致）
+├─ views/                      页面、交互状态与 Raycast 展示反馈
+│  ├─ window-panel.tsx         主面板
+│  ├─ layout-list.tsx          单窗布局页
+│  ├─ arrange-picker.tsx       自动排布页
+│  ├─ memories-list.tsx        已记忆窗口页（独立命令与主面板共用）
+│  ├─ restore-app.tsx          App 重放页
+│  ├─ feedback.ts             Toast 与关闭面板反馈
+│  └─ icons/index.ts          图标与配色
+├─ services/                   用例编排、持久化与系统能力
+│  ├─ actions.ts              业务动作：计算计划 → 调用后端 → 持久化
+│  ├─ action-result.ts        动作返回契约
+│  ├─ preferences.ts          Raycast 偏好读取
+│  ├─ import-hammerspoon.ts   数据导入服务（返回结果，不展示 Toast）
+│  ├─ storage/
+│  │  ├─ repository.ts        当前文件访问与共享 MemoryStore 实例
+│  │  ├─ layouts.ts           JSON 原子读写、导入合并、MRU/KV 规则
+│  │  └─ raycast-kv.ts        Raycast LocalStorage 适配
+│  └─ windows/
+│     ├─ types.ts             WindowProvider 契约与 ProviderError
+│     ├─ provider.ts          后端选择、生命周期与预热
+│     ├─ provider-windowkit.ts 原生 Swift socket 后端
+│     ├─ provider-applescript.ts AppleScript 兜底后端
+│     ├─ provider-native.ts   未启用的 Pro API 骨架
+│     └─ panel-close.ts       窗口写入前的面板关闭语义
+├─ domain/                     纯业务规则，不访问 Raycast/文件/窗口
+│  ├─ types.ts                核心数据模型
+│  ├─ engine.ts               排布、匹配、记忆与快照计划
+│  └─ templates.ts            布局模板及排序规则
+├─ utils/                      几何、App 短名、计时、osascript 执行工具
+└─ diagnostics/                历史开发探针，不注册为正式命令
 ```
+
+依赖方向：命令入口 → views / services；views → services / domain / utils；services → domain / utils；domain → 纯几何与模型。服务不依赖页面，领域和工具不依赖 Raycast API。用具体模块导入，不用聚合导出把原生后端意外带进纯函数测试。
+
+原生资源仍放在项目根 assets 目录。Raycast 会把命令打包为扁平 JS，并复制资源到产物的 assets 目录，因此后端内 `__dirname/assets/windowkit.swift` 指向的是**打包产物**，不能按源码目录层级增加 `../`。目录迁移不改变命令名、偏好键、数据格式或 helper 协议版本。
 
 - 主后端 windowkit：扩展首次调用时 spawn 一个 swift 进程，之后**常驻为 unix socket daemon**——窗口枚举/读写/屏幕全部为进程内原生 API 调用（单次操作 ~1–5ms，与 Hammerspoon 同构）；Raycast 空闲回收扩展进程后，下一会话直接连接复用，不再重复付 spawn 冷启动；辅助功能未授权 / 无 swiftc / 编译失败 / 进程崩溃时自动回落 AppleScript 后端；
 - 目标窗口：通过 Raycast 获取唤起前的 App，优先按 bundle ID 定位进程，定向读取 `AXFocusedWindow` / `AXMainWindow`；不再扫描所有 App 后按名字取第一个窗口（多个 Electron 进程可能同名）。无法可靠确定目标时不猜测其他 App 的窗口；

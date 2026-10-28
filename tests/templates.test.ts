@@ -12,7 +12,7 @@ import {
   templateById,
   templatesFor,
   templatesForOrdered,
-} from "../src/templates";
+} from "../src/domain/templates";
 
 describe("layoutTemplates 注册表", () => {
   it("id 唯一且全部可查", () => {

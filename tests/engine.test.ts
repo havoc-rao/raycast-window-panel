@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Frame, LayoutsData, Screen, TargetWindow } from "../src/types";
+import type { Frame, LayoutsData, Screen, TargetWindow } from "../src/domain/types";
 import {
   arrangeWithTemplate,
   deleteSnapshot,
@@ -11,8 +11,8 @@ import {
   ruleFor,
   saveCurWindow,
   windowKey,
-} from "../src/engine";
-import { defaultTemplateFor, templateById } from "../src/templates";
+} from "../src/domain/engine";
+import { defaultTemplateFor, templateById } from "../src/domain/templates";
 
 const SCREENS: Screen[] = [{ frame: { x: 0, y: 0, w: 1440, h: 900 } }];
 const REGION = SCREENS[0].frame;

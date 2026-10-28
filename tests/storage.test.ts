@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import type { KVStore } from "../src/types";
+import type { KVStore } from "../src/domain/types";
 import {
   ARRANGE_TEMPLATE_PREFIX,
   MAX_RECENT,
@@ -16,7 +16,7 @@ import {
   readLayoutsFile,
   serializeLayouts,
   writeLayoutsFile,
-} from "../src/storage";
+} from "../src/services/storage/layouts";
 
 class MemKV implements KVStore {
   m = new Map<string, string>();

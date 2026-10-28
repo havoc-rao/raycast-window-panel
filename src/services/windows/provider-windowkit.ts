@@ -9,9 +9,9 @@ import * as net from "net";
 import * as os from "os";
 import * as path from "path";
 import { getFrontmostApplication } from "@raycast/api";
-import type { Frame, Region, Screen, TargetWindow } from "./types";
-import { ProviderError } from "./windows";
-import type { BoundsWrite, WindowProvider } from "./windows";
+import type { Frame, Region, Screen, TargetWindow } from "../../domain/types";
+import { ProviderError } from "./types";
+import type { BoundsWrite, WindowProvider } from "./types";
 import { ensurePanelClosed, resetPanelCloseMemo } from "./panel-close";
 
 const RAYCAST_NAME = "Raycast";
