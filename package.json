@@ -111,6 +111,7 @@
   },
   "scripts": {
     "build": "ray build -e dist",
+    "install:release": "ray build",
     "dev": "ray develop",
     "test": "vitest run",
     "icons": "bash scripts/resize-icon.sh"
