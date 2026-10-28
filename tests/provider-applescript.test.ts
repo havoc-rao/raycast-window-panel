@@ -2,6 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeMainWindow, getFrontmostApplication } from "@raycast/api";
 import { runOsascript } from "../src/utils/osascript";
 import { AppleScriptWindowProvider } from "../src/services/windows/provider-applescript";
+import { spawnSync } from "child_process";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
 vi.mock("@raycast/api", () => ({ getFrontmostApplication: vi.fn(), closeMainWindow: vi.fn() }));
 vi.mock("../src/utils/osascript", async (original) => ({
@@ -120,6 +124,38 @@ describe("targeted active window lookup", () => {
 });
 
 describe("PID-stable writes", () => {
+  it("repositions after resize without polling, readbacks, or settling delays", async () => {
+    output("OK");
+    await provider.setBounds(window, { x: -500, y: -200, w: 1200, h: 800 });
+    const script = run.mock.calls[0][0];
+    const move = "set position of window 3 of p to {-500, -200}";
+    const resize = "set size of window 3 of p to {1200, 800}";
+    expect(script.split(move)).toHaveLength(3);
+    expect(script.indexOf(move)).toBeLessThan(script.indexOf(resize));
+    expect(script.lastIndexOf(move)).toBeGreaterThan(script.indexOf(resize));
+    expect(script).not.toMatch(/\brepeat\b|\bdelay\b|bounds-mismatch|frameMatched/);
+    expect(script).not.toMatch(/\bto (?:the )?(?:position|size) of window|\bget (?:position|size)\b/);
+    expect(script.match(/\b(?:position|size) of window\b/g)).toHaveLength(3);
+    expect(run).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.skipIf(process.platform !== "darwin")("compiles generated single/batch scripts without moving windows", async () => {
+    output("OK");
+    await provider.setBounds(window, { x: -500.5, y: -200, w: 1200, h: 800 });
+    await provider.setBoundsBatch([{ window, frame: window.bounds }]);
+    const directory = mkdtempSync(join(tmpdir(), "window-panel-as-compile-"));
+    try {
+      for (const [i, [script]] of run.mock.calls.entries()) {
+        const compiled = spawnSync("/usr/bin/osacompile", ["-l", "AppleScript", "-o", join(directory, `${i}.scpt`)], { input: script, encoding: "utf8" });
+        expect(compiled.status, compiled.stderr).toBe(0);
+      }
+    } finally {
+      if (!directory.startsWith(join(tmpdir(), "window-panel-as-compile-"))) throw new Error("Unexpected compile directory");
+      rmSync(directory, { recursive: true });
+    }
+  });
+
   it("writes immediately after close and retains the 1500ms recent-close heuristic", async () => {
     output("OK");
     await provider.setBounds(window, window.bounds);
@@ -215,6 +251,16 @@ describe("batch writes (replay fast path)", () => {
     const script = run.mock.calls[0][0];
     expect(script).toContain("set position of window 3 of p to {10, 20}");
     expect(script).toContain("set position of window 4 of p to {400, 20}");
+    expect(script).not.toMatch(/\brepeat\b|\bdelay\b|bounds-mismatch|frameMatched/);
+    expect(script).not.toMatch(/\bto (?:the )?(?:position|size) of window|\bget (?:position|size)\b/);
+    expect(script.match(/\b(?:position|size) of window\b/g)).toHaveLength(6);
+    for (const [index, x] of [[3, 10], [4, 400]]) {
+      const move = `set position of window ${index} of p to {${x}, 20}`;
+      const resize = `set size of window ${index} of p to {300, 200}`;
+      expect(script.split(move)).toHaveLength(3);
+      expect(script.indexOf(move)).toBeLessThan(script.indexOf(resize));
+      expect(script.lastIndexOf(move)).toBeGreaterThan(script.indexOf(resize));
+    }
     expect(script).toContain("set item0 to \"OK\"");
     expect(script).toContain("set item1 to \"OK\"");
     expect(script).toContain("set end of out to item0");
@@ -298,7 +344,7 @@ describe("batch writes (replay fast path)", () => {
 
 describe("screen cache", () => {
   const screens = [{ frame: { x: 0, y: 0, w: 1920, h: 1080 } }];
-  const fallback = [{ frame: { x: 0, y: 0, w: 2560, h: 1440 } }];
+  const fallback: [] = [];
 
   it("shares reads across screen APIs until the 1000ms TTL and clones returned frames", async () => {
     output("0,0,1920,1080");
@@ -306,16 +352,18 @@ describe("screen cache", () => {
     first[0].frame.w = 1;
     first.push({ frame: { x: 0, y: 0, w: 1, h: 1 } });
     expect(await provider.getAllScreens()).toEqual(screens);
-    const region = await provider.getScreenRegion(window);
+    const region = await provider.getScreenRegion(window); // action-time fresh read
     region!.x = 999;
+    expect(run).toHaveBeenCalledTimes(2);
+    run.mockClear();
     await vi.advanceTimersByTimeAsync(999);
     expect(await provider.enumerateScreens()).toEqual(screens);
-    expect(run).toHaveBeenCalledOnce();
+    expect(run).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
     output("0,0,1600,900");
     await vi.advanceTimersByTimeAsync(1);
     expect(await provider.enumerateScreens()).toEqual([{ frame: { x: 0, y: 0, w: 1600, h: 900 } }]);
-    expect(run).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenCalledOnce();
   });
 
   it("deduplicates in-flight reads and starts the TTL when the read completes", async () => {
@@ -372,6 +420,26 @@ describe("screen cache", () => {
 });
 
 describe("screen coordinates", () => {
+  it("refreshes a cached external display when choosing an action region", async () => {
+    output("0,0,1920,1080|-1920,0,1920,1080");
+    await provider.getAllScreens();
+    output("0,0,1440,900,0,40,1440,835");
+    expect(await provider.getScreenRegion({ ...window, bounds: { x: -1800, y: 0, w: 800, h: 600 } })).toEqual({ x: 0, y: 25, w: 1440, h: 835 });
+    expect(run).toHaveBeenCalledTimes(2);
+    const screens = await provider.getAllScreens();
+    screens[0].visibleFrame!.w = 1;
+    expect((await provider.getAllScreens())[0].visibleFrame!.w).toBe(1440);
+  });
+
+  it("converts full and visible frames using the primary full-frame top", async () => {
+    output("0,0,1920,1080,0,40,1920,1015|0,1080,1600,900,0,1080,1600,875");
+    expect(await provider.enumerateScreens()).toEqual([
+      { frame: { x: 0, y: 0, w: 1920, h: 1080 }, visibleFrame: { x: 0, y: 25, w: 1920, h: 1015 } },
+      { frame: { x: 0, y: -900, w: 1600, h: 900 }, visibleFrame: { x: 0, y: -875, w: 1600, h: 875 } },
+    ]);
+    expect(run.mock.calls[0][0]).toContain("screen.visibleFrame");
+  });
+
   it("accepts zero/negative origins and converts Cocoa y-up to AX y-down", async () => {
     output("0,0,1920,1080|-1280,0,1280,1024|0,1080,1600,900|0,-900,1600,900|1920,0,2560,1440");
     expect(await provider.enumerateScreens()).toEqual([
@@ -389,9 +457,9 @@ describe("screen coordinates", () => {
     expect(await provider.enumerateScreens()).toEqual([{ frame: { x: 0, y: 0, w: 1920, h: 1080 } }]);
   });
 
-  it.each(["", "broken|-1280,0,1280,1024"])("retains legacy fallback if primary screen is unavailable", async (value) => {
+  it.each(["", "broken|-1280,0,1280,1024"])("returns no invented screen if primary screen is unavailable", async (value) => {
     output(value);
-    expect(await provider.enumerateScreens()).toEqual([{ frame: { x: 0, y: 0, w: 2560, h: 1440 } }]);
+    expect(await provider.enumerateScreens()).toEqual([]);
   });
 
   it("finds an above-primary screen using AX window bounds", async () => {

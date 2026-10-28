@@ -8,12 +8,23 @@ import { ProviderError } from "./types";
 import type { BoundsWrite, WindowProvider } from "./types";
 import { getFrontmostApplication } from "@raycast/api";
 import { ensurePanelClosed, resetPanelCloseMemo } from "./panel-close";
+import { screenRegionForWindow } from "../../utils/geometry";
 
 /** 窗口枚举行字段分隔符（控制字符 US，避免与标题冲突） */
 const SEP = "\u001f";
 const RAYCAST_NAME = "Raycast";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** AX may constrain a move using the old size; restore position after resizing.
+ * Do not read back bounds: AX can report stale/constrained geometry after a
+ * successful write. Only actual script errors should trigger the existing retry. */
+function boundsWriteScript(pid: number, index: number, frame: Frame): string {
+  return `set p to a reference to (first application process whose unix id is ${pid})
+    set position of window ${index} of p to {${frame.x}, ${frame.y}}
+    set size of window ${index} of p to {${frame.w}, ${frame.h}}
+    set position of window ${index} of p to {${frame.x}, ${frame.y}}`;
+}
 
 interface RawWindow {
   pid: number;
@@ -311,9 +322,11 @@ end tell`,
       }
       screens = await this.screenRead;
     }
-    // Legacy fallback only; never cache it as a measurement of the user's display.
-    return (screens ?? [{ frame: { x: 0, y: 0, w: 2560, h: 1440 } }])
-      .map((screen) => ({ ...screen, frame: { ...screen.frame } }));
+    // Never invent display dimensions on a failed measurement.
+    return (screens ?? []).map((screen) => ({
+      ...screen, frame: { ...screen.frame },
+      ...(screen.visibleFrame ? { visibleFrame: { ...screen.visibleFrame } } : {}),
+    }));
   }
 
   private async readScreens(): Promise<Screen[] | null> {
@@ -323,8 +336,11 @@ ObjC.import("AppKit");
 const ss = $.NSScreen.screens;
 const out = [];
 for (let i = 0; i < ss.count; i++) {
-  const f = ss.objectAtIndex(i).frame;
-  out.push(f.origin.x + "," + f.origin.y + "," + f.size.width + "," + f.size.height);
+  const screen = ss.objectAtIndex(i);
+  const f = screen.frame;
+  const v = screen.visibleFrame;
+  out.push([f.origin.x, f.origin.y, f.size.width, f.size.height,
+    v.origin.x, v.origin.y, v.size.width, v.size.height].join(","));
 }
 out.join("|");
 `,
@@ -333,31 +349,28 @@ out.join("|");
     if (!r.ok) return null;
     const frames = r.output.split("|").map((line) => {
       const p = line.split(",").map((v) => v.trim() ? Number(v) : NaN);
-      return p.length === 4 && p.every(Number.isFinite) && p[2] > 0 && p[3] > 0
-        ? { x: p[0], y: p[1], w: p[2], h: p[3] }
-        : null;
+      if ((p.length !== 4 && p.length !== 8) || !p.every(Number.isFinite) || p[2] <= 0 || p[3] <= 0) return null;
+      if (p.length === 8 && (p[6] <= 0 || p[7] <= 0)) return null;
+      return {
+        frame: { x: p[0], y: p[1], w: p[2], h: p[3] },
+        ...(p.length === 8 ? { visibleFrame: { x: p[4], y: p[5], w: p[6], h: p[7] } } : {}),
+      };
     });
     // NSScreen.screens[0] is the primary screen (menu bar), not the focused screen.
     // Cocoa is bottom-left / y-up; AX is primary-screen top-left / y-down.
     const primary = frames[0];
     if (!primary) return null; // Cannot convert other screens without the primary.
-    const primaryTop = primary.y + primary.h;
-    return frames.flatMap((frame) => frame
-      ? [{ frame: { ...frame, y: primaryTop - frame.y - frame.h } }]
+    const primaryTop = primary.frame.y + primary.frame.h;
+    const toAX = (frame: Frame): Frame => ({ ...frame, y: primaryTop - frame.y - frame.h });
+    return frames.flatMap((screen) => screen
+      ? [{ frame: toAX(screen.frame), ...(screen.visibleFrame ? { visibleFrame: toAX(screen.visibleFrame) } : {}) }]
       : []);
 
   }
 
   async getScreenRegion(w: TargetWindow): Promise<Region | null> {
-    const screens = await this.enumerateScreens();
-    if (screens.length === 0) return null;
-    const cx = w.bounds.x + w.bounds.w / 2;
-    const cy = w.bounds.y + w.bounds.h / 2;
-    const hit = screens.find(
-      (s) =>
-        cx >= s.frame.x && cx < s.frame.x + s.frame.w && cy >= s.frame.y && cy < s.frame.y + s.frame.h
-    );
-    return (hit ?? screens[0]).frame;
+    this.screenCache = null;
+    return screenRegionForWindow(w.bounds, await this.enumerateScreens());
   }
 
   async getAllScreens(): Promise<Screen[]> {
@@ -396,9 +409,7 @@ out.join("|");
   ): Promise<{ ok: boolean; output: string; error: string }> {
     const script = `tell application "System Events"
   try
-    set p to a reference to (first application process whose unix id is ${pid})
-    set position of window ${index} of p to {${frame.x}, ${frame.y}}
-    set size of window ${index} of p to {${frame.w}, ${frame.h}}
+    ${boundsWriteScript(pid, index, frame)}
     return "OK"
   on error errMsg number errNum
     return "ERR|" & errNum & "|" & errMsg
@@ -438,9 +449,7 @@ end tell`;
   set end of out to item${i}`;
         }
         return `  try
-    set p to a reference to (first application process whose unix id is ${pid})
-    set position of window ${index} of p to {${it.frame.x}, ${it.frame.y}}
-    set size of window ${index} of p to {${it.frame.w}, ${it.frame.h}}
+    ${boundsWriteScript(pid, index, it.frame)}
     set item${i} to "OK"
   on error errMsg number errNum
     set item${i} to "ERR|" & errNum & "|" & errMsg

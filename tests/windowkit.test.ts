@@ -47,7 +47,7 @@ describe("windowkit socket 线协议", () => {
   it("ping 往返 + 版本校验", async () => {
     const client = await startClient();
     const pong = await client.request<{ version: number }>("ping");
-    expect(pong.version).toBe(5);
+    expect(pong.version).toBe(7);
     client.stop();
   });
 
@@ -70,7 +70,7 @@ describe("windowkit socket 线协议", () => {
     const client = await startClient();
     await expect(client.request("windows", {}, 100)).rejects.toThrow("超时");
     process.env.WK_DELAY = "0";
-    expect(await client.request("ping")).toEqual({ version: 5 });
+    expect(await client.request("ping")).toEqual({ version: 7 });
     client.stop();
   });
 
@@ -105,7 +105,7 @@ describe("windowkit socket 线协议", () => {
     c1.stop(); // 只断开连接，不杀 daemon
     const c2 = new WindowKitClient(FIXTURE, sockPath);
     expect(await c2.start()).toBe(true); // 复用：不再 spawn
-    expect(await c2.request("ping")).toEqual({ version: 5 });
+    expect(await c2.request("ping")).toEqual({ version: 7 });
     expect(fs.readFileSync(countFile, "utf8")).toBe("1"); // spawn 次数仍为 1
     started.push(c2);
   });
@@ -177,6 +177,22 @@ describe("WindowKitProvider（假 daemon 端到端）", () => {
     expect(a).toEqual([{ frame: { x: 0, y: 0, w: 1920, h: 1080 } }]);
     expect(b).toEqual(a);
     expect(spy.mock.calls.filter((c) => c[0] === "screens")).toHaveLength(1);
+  });
+
+  it("action screen lookup refreshes cached topology and uses available frame", async () => {
+    const p = await provider();
+    const client = (p as unknown as { client: WindowKitClient }).client;
+    await p.getAllScreens();
+    const request = vi.spyOn(client, "request");
+    request.mockResolvedValueOnce([{ x: 0, y: 0, w: 1440, h: 900, visibleFrame: { x: 0, y: 25, w: 1440, h: 835 } }]);
+    const target = { id: "1|1", appName: "App", bundleId: "app", title: "", bounds: { x: 2000, y: 0, w: 900, h: 600 }, fullScreen: false, positionable: true, resizable: true };
+    expect(await p.getScreenRegion(target)).toEqual({ x: 0, y: 25, w: 1440, h: 835 });
+    const a = await p.getAllScreens();
+    a[0].visibleFrame!.w = 1;
+    expect((await p.getAllScreens())[0].visibleFrame!.w).toBe(1440);
+    request.mockResolvedValueOnce([]);
+    expect(await p.getScreenRegion(target)).toBeNull();
+    request.mockRestore();
   });
 
   it("listWindowsOnActiveDesktop：同进程优先 + 区域过滤", async () => {

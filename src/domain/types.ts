@@ -14,6 +14,8 @@ export interface Region extends Frame {}
 /** 屏幕（clampFrame 安全网与多屏区域用） */
 export interface Screen {
   frame: Frame;
+  /** 不含菜单栏/Dock 的可用区域；布局写入使用它，选屏仍使用完整 frame。 */
+  visibleFrame?: Frame;
 }
 
 /** 单窗口记忆记录（数据模型 v2 的 windows 表条目） */

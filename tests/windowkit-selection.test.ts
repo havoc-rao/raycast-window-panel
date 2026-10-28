@@ -8,7 +8,7 @@ import { expect, it } from "vitest";
 it.skipIf(process.platform !== "darwin")("Swift target selection accepts inactive unique apps and rejects ambiguity", () => {
   const source = fs.readFileSync(path.join(__dirname, "../assets/windowkit.swift"), "utf8");
   const start = source.indexOf("func selectTarget<T>");
-  const end = source.indexOf("\nfunc setFrame", start);
+  const end = source.indexOf("\n// AX success", start);
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wk-selection-"));

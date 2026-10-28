@@ -13,10 +13,11 @@ import type { Frame, Region, Screen, TargetWindow } from "../../domain/types";
 import { ProviderError } from "./types";
 import type { BoundsWrite, WindowProvider } from "./types";
 import { ensurePanelClosed, resetPanelCloseMemo } from "./panel-close";
+import { screenRegionForWindow } from "../../utils/geometry";
 
 const RAYCAST_NAME = "Raycast";
 /** 与 assets/windowkit.swift 的 WINDOWKIT_VERSION 保持一致；不一致时重新编译/重建 helper */
-const WINDOWKIT_VERSION = 5;
+const WINDOWKIT_VERSION = 7;
 const CACHE_DIR = path.join(os.homedir(), "Library", "Caches", "raycast-window-panel");
 const BIN_NAME = "windowkit";
 const SOCK_NAME = "windowkit.sock";
@@ -435,23 +436,18 @@ export class WindowKitProvider implements WindowProvider {
       }
       screens = await this.screenRead;
     }
-    // Legacy fallback only; never cache it as a measurement of the user's display.
-    return (screens ?? [{ frame: { x: 0, y: 0, w: 2560, h: 1440 } }]).map((s) => ({
+    // Never invent display dimensions: let the caller report an unavailable screen.
+    return (screens ?? []).map((s) => ({
       ...s,
       frame: { ...s.frame },
+      ...(s.visibleFrame ? { visibleFrame: { ...s.visibleFrame } } : {}),
     }));
   }
 
   async getScreenRegion(w: TargetWindow): Promise<Region | null> {
-    const screens = await this.enumerateScreens();
-    if (screens.length === 0) return null;
-    const cx = w.bounds.x + w.bounds.w / 2;
-    const cy = w.bounds.y + w.bounds.h / 2;
-    const hit = screens.find(
-      (s) =>
-        cx >= s.frame.x && cx < s.frame.x + s.frame.w && cy >= s.frame.y && cy < s.frame.y + s.frame.h
-    );
-    return (hit ?? screens[0]).frame;
+    // Read current topology at action time, not a pre-unplug TTL snapshot.
+    this.screenCache = null;
+    return screenRegionForWindow(w.bounds, await this.enumerateScreens());
   }
 
   async getAllScreens(): Promise<Screen[]> {
@@ -620,7 +616,13 @@ export class WindowKitProvider implements WindowProvider {
         : null;
     });
     if (!frames[0]) return null;
-    return frames.flatMap((f) => (f ? [{ frame: f }] : []));
+    return frames.flatMap((f, i) => {
+      if (!f) return [];
+      const v = rows[i].visibleFrame as Frame | undefined;
+      const visibleFrame = v && [v.x, v.y, v.w, v.h].every(Number.isFinite) && v.w > 0 && v.h > 0
+        ? { x: v.x, y: v.y, w: v.w, h: v.h } : undefined;
+      return [{ frame: f, ...(visibleFrame ? { visibleFrame } : {}) }];
+    });
   }
 
   private logChannel(e: unknown): void {

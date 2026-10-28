@@ -18,7 +18,10 @@ import AppKit
 import ApplicationServices
 import Darwin
 
-let WINDOWKIT_VERSION = 5
+let WINDOWKIT_VERSION = 7
+// Register this headless helper with AppKit so display-change notifications refresh NSScreen.
+let application = NSApplication.shared
+application.setActivationPolicy(.prohibited)
 signal(SIGPIPE, SIG_IGN)
 
 let socketPath = ProcessInfo.processInfo.environment["WINDOWKIT_SOCK"] ?? ""
@@ -149,29 +152,49 @@ func selectTarget<T>(_ candidates: [T], isActive: (T) -> Bool) -> T? {
   return active.count == 1 ? active[0] : nil
 }
 
+// AX success means accepted, not applied. Move onto the destination display first,
+// resize there, then reposition because resizing can shift/clamp the origin.
+// Do not poll for exact equality: apps apply changes asynchronously and may snap
+// to resize increments. Only actual AX write failures should trigger a retry.
+func applyFrame(
+  _ target: CGRect,
+  position: () -> String?, size: () -> String?
+) -> String? {
+  guard [target.origin.x, target.origin.y, target.width, target.height].allSatisfy({ $0.isFinite }),
+        target.width > 0, target.height > 0 else { return "invalid-frame" }
+  if let err = position() { return err }
+  if let err = size() { return err }
+  if let err = position() { return err }
+  return nil
+}
+
 func setFrame(_ el: AXUIElement, _ x: Double, _ y: Double, _ w: Double, _ h: Double) -> String? {
   var p = CGPoint(x: x, y: y)
   var sz = CGSize(width: w, height: h)
   guard let pv = AXValueCreate(.cgPoint, &p), let sv = AXValueCreate(.cgSize, &sz) else {
     return "axvalue-create-failed"
   }
-  let e1 = AXUIElementSetAttributeValue(el, kAXPositionAttribute as CFString, pv)
-  if e1 != .success { return "position:\(e1.rawValue)" }
-  let e2 = AXUIElementSetAttributeValue(el, kAXSizeAttribute as CFString, sv)
-  if e2 != .success { return "size:\(e2.rawValue)" }
-  return nil
+  return applyFrame(CGRect(x: x, y: y, width: w, height: h), position: {
+    let err = AXUIElementSetAttributeValue(el, kAXPositionAttribute as CFString, pv)
+    return err == .success ? nil : "position:\(err.rawValue)"
+  }, size: {
+    let err = AXUIElementSetAttributeValue(el, kAXSizeAttribute as CFString, sv)
+    return err == .success ? nil : "size:\(err.rawValue)"
+  })
 }
 
-func screensJson() -> [[String: Double]] {
+func screensJson() -> [[String: Any]] {
   let ss = NSScreen.screens
   guard let primary = ss.first else { return [] }
   let primaryTop = primary.frame.origin.y + primary.frame.size.height
-  return ss.map { s -> [String: Double] in
-    let f = s.frame
-    return ["x": Double(f.origin.x),
-            "y": Double(primaryTop - f.origin.y - f.size.height),
-            "w": Double(f.size.width),
-            "h": Double(f.size.height)]
+  func axFrame(_ f: CGRect) -> [String: Double] {
+    ["x": Double(f.minX), "y": Double(primaryTop - f.maxY),
+     "w": Double(f.width), "h": Double(f.height)]
+  }
+  return ss.map { s -> [String: Any] in
+    var row: [String: Any] = axFrame(s.frame)
+    row["visibleFrame"] = axFrame(s.visibleFrame)
+    return row
   }
 }
 

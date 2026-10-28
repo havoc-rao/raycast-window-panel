@@ -106,6 +106,20 @@ export function normalizeFrames(frames: Frame[], region: Region): Frame[] {
   }));
 }
 
+/** 按窗口与屏幕的最大相交面积选屏，处理跨屏/拔屏后中心落在空白区域的窗口。 */
+export function screenRegionForWindow(bounds: Frame, screens: Screen[]): Region | null {
+  let best: Screen | undefined;
+  let largest = 0;
+  for (const screen of screens) {
+    const f = screen.frame;
+    const area = Math.max(0, Math.min(bounds.x + bounds.w, f.x + f.w) - Math.max(bounds.x, f.x)) *
+      Math.max(0, Math.min(bounds.y + bounds.h, f.y + f.h) - Math.max(bounds.y, f.y));
+    if (area > largest) { largest = area; best = screen; }
+  }
+  const screen = best ?? screens[0];
+  return screen ? { ...(screen.visibleFrame ?? screen.frame) } : null;
+}
+
 /** 测试/对照用：浮点近似相等 */
 export function framesAlmostEqual(a: Frame, b: Frame, eps = 1e-6): boolean {
   return (
