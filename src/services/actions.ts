@@ -1,6 +1,6 @@
 // 命令层业务编排：目标解析 → 引擎计划 → provider 执行 → 持久化/MRU → 反馈文案
 // 全部动作返回 {ok, message}，命令层负责 Toast/Alert/关闭面板。
-import type { LayoutsData, TargetWindow } from "../domain/types";
+import type { Frame, LayoutsData, TargetWindow } from "../domain/types";
 import {
   deleteSnapshot,
   doArrange,
@@ -14,8 +14,9 @@ import { clampFrame } from "../utils/geometry";
 import { singleLayoutById, templateById } from "../domain/templates";
 import { getMemoryTargetEnabledPref } from "./preferences";
 import { ProviderError } from "./windows/types";
-import type { BoundsWrite } from "./windows/types";
+import type { BoundsWrite, WindowProvider } from "./windows/types";
 import { getProvider } from "./windows/provider";
+import { refusedMessage, writeIgnored } from "./windows/verify";
 import { loadLayouts, memory, persistLayouts } from "./storage/repository";
 import { fail, ok } from "./action-result";
 import type { ActionResult } from "./action-result";
@@ -31,6 +32,18 @@ export async function resolveTarget(): Promise<TargetWindow | null> {
   return p.getActiveWindow();
 }
 
+/** 读回窗口当前帧：优先按 pid|index 句柄匹配，索引漂移时退回「该 App 只有一个窗口」。
+ *  读不到（窗口已关闭/通道异常）返回 null，由调用方保持旧语义，不当成失败。 */
+async function readWindowBounds(p: WindowProvider, w: TargetWindow): Promise<Frame | null> {
+  try {
+    const windows = await p.listWindowsForApp(w.bundleId);
+    const hit = windows.find((x) => x.id === w.id) ?? (windows.length === 1 ? windows[0] : undefined);
+    return hit ? hit.bounds : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 单窗布局：只动目标窗口（铺满/留缝/居中/半屏/1/4），不改记忆、不排其他窗口 */
 export async function applySingleLayout(templateId: string): Promise<ActionResult> {
   const p = await getProvider();
@@ -44,6 +57,22 @@ export async function applySingleLayout(templateId: string): Promise<ActionResul
   const frame = tmpl.fn(1, region)[0];
   try {
     await timed("single.write", () => p.setBounds(target, frame));
+    // AX 成功 ≠ 已生效：部分应用（如 CodeBuddy CN）接受写入却保持原尺寸。
+    // 这类「尺寸完全没变」必须识别出来，否则会误报成功，还会把窗口停在写入过程的中间位置。
+    let applied = await timed("single.verify", () => readWindowBounds(p, target));
+    if (writeIgnored(target.bounds, frame, applied)) {
+      await timed("single.write-retry", () => p.setBounds(target, frame));
+      applied = await timed("single.verify-retry", () => readWindowBounds(p, target));
+      if (writeIgnored(target.bounds, frame, applied)) {
+        let restored = true;
+        try {
+          await timed("single.restore", () => p.setBounds(target, target.bounds));
+        } catch {
+          restored = false;
+        }
+        return fail(refusedMessage(target.appName, frame, applied, restored));
+      }
+    }
   } catch (e) {
     return providerFail(e);
   }
