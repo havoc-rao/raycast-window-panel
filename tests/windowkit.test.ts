@@ -202,6 +202,21 @@ describe("WindowKitProvider（假 daemon 端到端）", () => {
     expect(wins.map((w) => w.title)).toEqual(["Console"]);
   });
 
+  it("listWindowsOnActiveDesktop：Finder 桌面窗口不参与排布计数", async () => {
+    const p = await provider();
+    const client = (p as unknown as { client: WindowKitClient }).client;
+    const request = vi.spyOn(client, "request");
+    request.mockResolvedValueOnce([
+      // 真实桌面：无标题、不报 subrole、铺满整屏
+      { pid: 689, appName: "Finder", bundleId: "com.apple.finder", index: 1, title: "", x: 0, y: 0, w: 1920, h: 1080, subrole: "", fullScreen: false, minimized: false, resizable: true },
+      { pid: 700, appName: "Notes", bundleId: "com.apple.Notes", index: 1, title: "Note", x: 100, y: 100, w: 800, h: 600, subrole: "AXStandardWindow", fullScreen: false, minimized: false, resizable: true },
+    ]);
+    request.mockResolvedValueOnce([{ x: 0, y: 0, w: 1920, h: 1080 }]);
+    const target = { id: "11228|1", appName: "Electron", bundleId: "com.github.Electron", title: "Harness", bounds: { x: 0, y: 0, w: 900, h: 600 }, fullScreen: false, positionable: true, resizable: true };
+    expect((await p.listWindowsOnActiveDesktop(target)).map((w) => w.title)).toEqual(["Note"]);
+    request.mockRestore();
+  });
+
   it("setBoundsBatch：成功路径一次请求；失败重试一次后仍失败 → ProviderError", async () => {
     const p = await provider();
     await p.setBoundsBatch([{ window: { id: "11228|1", appName: "E", bundleId: "b", title: "t", bounds: { x: 0, y: 0, w: 1, h: 1 }, fullScreen: false, positionable: true, resizable: true }, frame: { x: 10, y: 20, w: 300, h: 200 } }]);

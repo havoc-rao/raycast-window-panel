@@ -8,6 +8,7 @@ import { ProviderError } from "./types";
 import type { BoundsWrite, WindowProvider } from "./types";
 import { getFrontmostApplication } from "@raycast/api";
 import { ensurePanelClosed, resetPanelCloseMemo } from "./panel-close";
+import { isDesktopWindow } from "./desktop";
 import { screenRegionForWindow } from "../../utils/geometry";
 
 /** 窗口枚举行字段分隔符（控制字符 US，避免与标题冲突） */
@@ -17,8 +18,9 @@ const RAYCAST_NAME = "Raycast";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** AX may constrain a move using the old size; restore position after resizing.
- * Do not read back bounds: AX can report stale/constrained geometry after a
- * successful write. Only actual script errors should trigger the existing retry. */
+ * This script only reports write errors — a successful write can still be ignored by
+ * the app. Provider-agnostic "did the window actually resize?" verification lives in
+ * services/windows/verify.ts (single-window layout), so no read-back is done here. */
 function boundsWriteScript(pid: number, index: number, frame: Frame): string {
   return `set p to a reference to (first application process whose unix id is ${pid})
     set position of window ${index} of p to {${frame.x}, ${frame.y}}
@@ -269,12 +271,15 @@ end tell`,
     const raws = await this.enumerateWindows();
     const region = await this.getScreenRegion(target);
     if (!region) return [];
+    // 整屏帧只在这里传：桌面窗口铺满整块屏幕，会被误判成一个可排布窗口（排布数量 +1）
+    const screens = await this.enumerateScreens();
     const targetPid = Number(target.id.split("|")[0]);
     const inRegion = raws.filter(
       (w) =>
         w.appName !== RAYCAST_NAME &&
         !w.minimized &&
         this.isStandard(w) &&
+        !isDesktopWindow(w, screens) &&
         `${w.pid}|${w.index}` !== target.id &&
         w.x + w.w > region.x &&
         w.x < region.x + region.w &&

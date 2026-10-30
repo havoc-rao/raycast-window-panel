@@ -13,6 +13,7 @@ import type { Frame, Region, Screen, TargetWindow } from "../../domain/types";
 import { ProviderError } from "./types";
 import type { BoundsWrite, WindowProvider } from "./types";
 import { ensurePanelClosed, resetPanelCloseMemo } from "./panel-close";
+import { isDesktopWindow } from "./desktop";
 import { screenRegionForWindow } from "../../utils/geometry";
 
 const RAYCAST_NAME = "Raycast";
@@ -368,12 +369,15 @@ export class WindowKitProvider implements WindowProvider {
       const raws = await this.fetchRaws();
       const region = await this.getScreenRegion(target);
       if (!region) return [];
+      // 整屏帧只在这里传：桌面窗口铺满整块屏幕，会被误判成一个可排布窗口（排布数量 +1）
+      const screens = await this.enumerateScreens();
       const targetPid = Number(target.id.split("|")[0]);
       const inRegion = raws.filter(
         (w) =>
           w.appName !== RAYCAST_NAME &&
           !w.minimized &&
           this.isStandard(w) &&
+          !isDesktopWindow(w, screens) &&
           `${w.pid}|${w.index}` !== target.id &&
           w.x + w.w > region.x &&
           w.x < region.x + region.w &&

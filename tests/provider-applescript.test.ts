@@ -239,6 +239,18 @@ describe("app-scoped enumeration (replay fast path)", () => {
   });
 });
 
+describe("active-desktop enumeration", () => {
+  const desktop = ["689", "Finder", "com.apple.finder", "", "0", "0", "1920", "1080", "", "false", "false", "true"];
+  const note = ["700", "Notes", "com.apple.Notes", "Note", "100", "100", "800", "600", "AXStandardWindow", "false", "false", "true"];
+
+  it("excludes the Finder desktop window from arrange candidates", async () => {
+    run
+      .mockResolvedValueOnce({ ok: true, output: [desktop, note].map((r) => r.join(SEP)).join("\n"), error: "" })
+      .mockResolvedValueOnce({ ok: true, output: "0,0,1920,1080", error: "" });
+    expect((await provider.listWindowsOnActiveDesktop(window)).map((w) => w.title)).toEqual(["Note"]);
+  });
+});
+
 describe("batch writes (replay fast path)", () => {
   const w1 = { ...window, id: "73245|3", title: "A" };
   const w2 = { ...window, id: "73245|4", title: "B" };
