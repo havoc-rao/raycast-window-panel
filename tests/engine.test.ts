@@ -225,7 +225,7 @@ describe("记忆动作（save / forget / replay / snapshot 删除）", () => {
     expect(r.message).toContain("共 2 条");
     expect(Object.keys(data.windows)).toHaveLength(2);
   });
-  it("findWindowFor 匹配链：id → bundleID+标题 → 同 bundleID 首个（迭代序与 Lua 一致）", () => {
+  it("findWindowFor 优先按 App 和标题匹配，不让过期索引选中其他窗口", () => {
     const w1 = win("a", "T1", { x: 0, y: 0, w: 1, h: 1 });
     const w2 = win("a", "T2", { x: 0, y: 0, w: 1, h: 1 });
     const w3 = win("b", "T1", { x: 0, y: 0, w: 1, h: 1 });
@@ -233,11 +233,10 @@ describe("记忆动作（save / forget / replay / snapshot 删除）", () => {
     expect(findWindowFor({ id: w1.id, bundleID: "a", title: "T1", frame: w1.bounds }, [w1, w2, w3])?.id).toBe(w1.id);
     // bundle+标题
     expect(findWindowFor({ bundleID: "a", title: "T2", frame: w1.bounds }, [w1, w2, w3])?.id).toBe(w2.id);
-    // 同 bundleID 首个兜底
-    expect(findWindowFor({ bundleID: "a", title: "T9", frame: w1.bounds }, [w1, w2, w3])?.id).toBe(w1.id);
-    expect(findWindowFor({ bundleID: "zzz", title: "T9", frame: w1.bounds }, [w1, w2, w3])).toBeUndefined();
-    // 与 Lua 一致：列表靠前的 bundle+标题命中优先于靠后窗口的 id 命中
-    expect(findWindowFor({ id: w2.id, bundleID: "a", title: "T1", frame: w1.bounds }, [w1, w2, w3])?.id).toBe(w1.id);
+    expect(findWindowFor({ id: w1.id, bundleID: "a", title: "T9", frame: w1.bounds }, [w1, w2, w3], true)).toBeUndefined();
+    expect(findWindowFor({ bundleID: "a", title: "T9", frame: w1.bounds }, [w1, w3], true)?.id).toBe(w1.id);
+    expect(findWindowFor({ id: w3.id, bundleID: "zzz", title: "T1", frame: w1.bounds }, [w1, w2, w3], true)).toBeUndefined();
+    expect(findWindowFor({ id: w2.id, bundleID: "a", title: "T1", frame: w1.bounds }, [w2, w1, w3])?.id).toBe(w1.id);
   });
   it("replayAppWindows：按 bundleID 恢复全部已记忆窗口（帧被 clamp）", () => {
     const data = layouts({
@@ -259,18 +258,17 @@ describe("记忆动作（save / forget / replay / snapshot 删除）", () => {
     expect(plan.ok).toBe(false);
     expect(plan.count).toBe(0);
   });
-  it("replayAppWindows：多条记忆命中同一窗口（标题兜底）→ 去重只保留第一条", () => {
+  it("replayAppWindows：多条记忆只有一个打开的窗口 → 不让旧记忆覆盖标题精确匹配", () => {
     const data = layouts({
       "a|t1": { bundleID: "a", title: "t1", frame: { x: 10, y: 10, w: 400, h: 300 } },
       "a|t2": { bundleID: "a", title: "t2", frame: { x: 500, y: 10, w: 400, h: 300 } },
     });
-    // 唯一窗口 a 窗口标题是 t2：记忆 t1 走同 bundleID 兜底命中同一窗口，t2 精确命中同一窗口
     const a1 = win("a", "t2", { x: 0, y: 0, w: 800, h: 600 });
     const plan = replayAppWindows(data, "a", [a1], SCREENS);
     expect(plan.ok).toBe(true);
     expect(plan.count).toBe(1);
     expect(plan.windows).toHaveLength(1);
-    expect(plan.frames[0]).toEqual({ x: 10, y: 10, w: 400, h: 300 }); // 第一条记忆胜出
+    expect(plan.frames[0]).toEqual({ x: 500, y: 10, w: 400, h: 300 });
   });
   it("deleteSnapshot：两步确认后删除，返回槽位数", () => {
     const data = layouts({}, { savedAt: 1, count: 3, frames: [{ x: 0, y: 0, w: 1, h: 1 }, { x: 1, y: 0, w: 1, h: 1 }, { x: 2, y: 0, w: 1, h: 1 }] });

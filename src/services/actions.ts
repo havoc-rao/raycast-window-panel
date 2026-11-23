@@ -1,6 +1,6 @@
 // 命令层业务编排：目标解析 → 引擎计划 → provider 执行 → 持久化/MRU → 反馈文案
 // 全部动作返回 {ok, message}，命令层负责 Toast/Alert/关闭面板。
-import type { Frame, LayoutsData, TargetWindow } from "../domain/types";
+import type { LayoutsData, TargetWindow } from "../domain/types";
 import {
   deleteSnapshot,
   doArrange,
@@ -11,12 +11,12 @@ import {
   saveCurWindow,
 } from "../domain/engine";
 import { clampFrame } from "../utils/geometry";
-import { singleLayoutById, templateById } from "../domain/templates";
+import { singleLayoutById, singleTemplateFrame, templateById } from "../domain/templates";
 import { getMemoryTargetEnabledPref } from "./preferences";
 import { ProviderError } from "./windows/types";
 import type { BoundsWrite, WindowProvider } from "./windows/types";
 import { getProvider } from "./windows/provider";
-import { refusedMessage, writeIgnored } from "./windows/verify";
+import { applyVerifiedBounds } from "./windows/verify";
 import { loadLayouts, memory, persistLayouts } from "./storage/repository";
 import { fail, ok } from "./action-result";
 import type { ActionResult } from "./action-result";
@@ -32,15 +32,12 @@ export async function resolveTarget(): Promise<TargetWindow | null> {
   return p.getActiveWindow();
 }
 
-/** 读回窗口当前帧：优先按 pid|index 句柄匹配，索引漂移时退回「该 App 只有一个窗口」。
- *  读不到（窗口已关闭/通道异常）返回 null，由调用方保持旧语义，不当成失败。 */
-async function readWindowBounds(p: WindowProvider, w: TargetWindow): Promise<Frame | null> {
+async function applyLayout(p: WindowProvider, stage: string, writes: BoundsWrite[]): Promise<ActionResult | null> {
   try {
-    const windows = await p.listWindowsForApp(w.bundleId);
-    const hit = windows.find((x) => x.id === w.id) ?? (windows.length === 1 ? windows[0] : undefined);
-    return hit ? hit.bounds : null;
-  } catch {
-    return null;
+    const issue = await timed(stage, () => applyVerifiedBounds(p, writes));
+    return issue ? fail(issue) : null;
+  } catch (e) {
+    return providerFail(e);
   }
 }
 
@@ -53,29 +50,11 @@ export async function applySingleLayout(templateId: string): Promise<ActionResul
   const region = await timed("single.screen", () => p.getScreenRegion(target));
   if (!region || region.w <= 0 || region.h <= 0) return fail("当前窗口屏幕不可用，请重新打开面板");
   const tmpl = singleLayoutById(templateId);
-  if (!tmpl || !tmpl.fn) return fail("布局不存在");
-  const frame = tmpl.fn(1, region)[0];
-  try {
-    await timed("single.write", () => p.setBounds(target, frame));
-    // AX 成功 ≠ 已生效：部分应用（如 CodeBuddy CN）接受写入却保持原尺寸。
-    // 这类「尺寸完全没变」必须识别出来，否则会误报成功，还会把窗口停在写入过程的中间位置。
-    let applied = await timed("single.verify", () => readWindowBounds(p, target));
-    if (writeIgnored(target.bounds, frame, applied)) {
-      await timed("single.write-retry", () => p.setBounds(target, frame));
-      applied = await timed("single.verify-retry", () => readWindowBounds(p, target));
-      if (writeIgnored(target.bounds, frame, applied)) {
-        let restored = true;
-        try {
-          await timed("single.restore", () => p.setBounds(target, target.bounds));
-        } catch {
-          restored = false;
-        }
-        return fail(refusedMessage(target.appName, frame, applied, restored));
-      }
-    }
-  } catch (e) {
-    return providerFail(e);
-  }
+  if (!tmpl) return fail("布局不存在");
+  const frame = singleTemplateFrame(tmpl, region, target.bounds);
+  if (!frame) return fail("布局不存在");
+  const issue = await applyLayout(p, "single.apply", [{ window: target, frame, positionOnly: !!tmpl.corner }]);
+  if (issue) return issue;
   await memory.bumpSingleRecent(templateId, (id) => !!singleLayoutById(id));
   return ok("当前窗口布局：" + tmpl.name);
 }
@@ -91,6 +70,7 @@ export async function runArrange(tmplId?: string): Promise<ActionResult> {
   const region = await timed("arrange.screen", () => p.getScreenRegion(target));
   if (!region) return fail("当前窗口屏幕不可用，请重新打开面板");
   const screens = await p.getAllScreens();
+  if (!screens.length) return fail("无法读取当前屏幕，未执行排布");
   const others = await p.listWindowsOnActiveDesktop(target);
   const data = loadLayouts();
   const ctx = makeArrangeContext(target, others, data, region, screens);
@@ -99,15 +79,8 @@ export async function runArrange(tmplId?: string): Promise<ActionResult> {
   const plan = doArrange(tmplId, remembered, ctx, data);
 
   if (plan.ok && (plan.kind === "applied" || plan.kind === "replayed") && plan.frames) {
-    for (let i = 0; i < ctx.fluid.length; i++) {
-      const f = plan.frames[i];
-      if (!f) continue;
-      try {
-        await timed(`arrange.write[${i}]`, () => p.setBounds(ctx.fluid[i], f));
-      } catch (e) {
-        return providerFail(e);
-      }
-    }
+    const issue = await applyLayout(p, "arrange.apply", plan.frames.map((frame, i) => ({ window: ctx.fluid[i], frame })));
+    if (issue) return issue;
   }
   if (plan.raiseFirst && ctx.fluid.length > 0) {
     try {
@@ -192,25 +165,12 @@ export async function replayAppCommand(bundleId: string, appName?: string): Prom
   const [all, screens] = await timed("replay.lookup", () =>
     Promise.all([scoped ? p.listWindowsForApp(bundleId) : p.listAllWindows(), p.getAllScreens()])
   );
+  if (!screens.length) return fail("无法读取当前屏幕，记忆布局未重放");
   const plan = replayAppWindows(data, bundleId, all, screens);
-  if (!plan.ok) return fail(plan.message.replace(bundleId, label));
-  // 已在目标位置的窗口跳过（位置一致就不写，省一次 AX 写）
-  const writes: BoundsWrite[] = [];
-  for (let i = 0; i < plan.windows.length; i++) {
-    const w = plan.windows[i];
-    const f = plan.frames[i];
-    const same =
-      Math.abs(w.bounds.x - f.x) < 1 &&
-      Math.abs(w.bounds.y - f.y) < 1 &&
-      Math.abs(w.bounds.w - f.w) < 1 &&
-      Math.abs(w.bounds.h - f.h) < 1;
-    if (!same) writes.push({ window: w, frame: f });
-  }
-  try {
-    await timed("replay.write", () => p.setBoundsBatch(writes));
-  } catch (e) {
-    return providerFail(e);
-  }
+  if (!plan.ok) return fail(`找不到 ${label} 对应的已记忆窗口，请确认窗口已打开且标题匹配`);
+  const issue = await applyLayout(p, "replay.apply", plan.windows.map((window, i) => ({ window, frame: plan.frames[i] })));
+  if (issue) return issue;
+  if (plan.count < records.length) return ok(`已重放 ${label} 的 ${plan.count}/${records.length} 个窗口，其余未找到匹配窗口`);
   return ok(plan.message.replace(bundleId, label));
 }
 
@@ -236,16 +196,13 @@ export async function replayMemoryCommand(key: string): Promise<ActionResult> {
   const info = data.windows[key];
   if (!info) return fail("该记忆已不存在");
   const p = await getProvider();
-  const all = await p.listAllWindows();
-  const screens = await p.getAllScreens();
-  const target = findWindowFor(info, all);
+  const [all, screens] = await Promise.all([p.listWindowsForApp(info.bundleID), p.getAllScreens()]);
+  if (!screens.length) return fail("无法读取当前屏幕，记忆布局未重放");
+  const onlyRecord = Object.values(data.windows).filter((rec) => rec.bundleID === info.bundleID).length === 1;
+  const target = findWindowFor(info, all, onlyRecord);
   if (!target) return fail("找不到对应窗口: " + info.title + " (窗口可能已关闭)");
-  try {
-    await p.setBounds(target, clampFrame(info.frame, screens));
-  } catch (e) {
-    return providerFail(e);
-  }
-  return ok("已重放: " + info.title);
+  const issue = await applyLayout(p, "memory.apply", [{ window: target, frame: clampFrame(info.frame, screens) }]);
+  return issue ?? ok("已重放: " + info.title);
 }
 
 /** 单条记忆删除（manage-memories 用） */

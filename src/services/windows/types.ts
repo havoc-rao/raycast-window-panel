@@ -14,8 +14,8 @@ export interface WindowProvider {
   getScreenRegion(w: TargetWindow): Promise<Region | null>;
   /** 全部屏幕（clampFrame 安全网；screens[0] 约定主屏） */
   getAllScreens(): Promise<Screen[]>;
-  /** 移动/缩放窗口（受应用最小窗口尺寸限制，与原版一致） */
-  setBounds(w: TargetWindow, frame: Frame): Promise<void>;
+  /** 移动/缩放窗口；positionOnly=true 时仅写位置，绝不写尺寸（支持不可缩放窗口）。 */
+  setBounds(w: TargetWindow, frame: Frame, positionOnly?: boolean, resizeCompatibilityRetry?: boolean): Promise<void>;
   /** 批量移动/缩放（一次脚本调用；失败项内部重试一次，仍有失败则抛 ProviderError） */
   setBoundsBatch(items: BoundsWrite[]): Promise<void>;
   /** 置顶窗口（排布后焦点窗 raise，与原版一致） */
@@ -26,13 +26,16 @@ export interface WindowProvider {
 export interface BoundsWrite {
   window: TargetWindow;
   frame: Frame;
+  positionOnly?: boolean;
+  /** 仅在读回确认尺寸仍不符时，请求 windowkit 尝试兼容写入。 */
+  resizeCompatibilityRetry?: boolean;
 }
 
 /** Provider 解析错误（命令层转为面向用户的提示） */
 export class ProviderError extends Error {
   constructor(
     message: string,
-    public readonly kind: "no-window" | "fullscreen" | "permission" | "generic"
+    public readonly kind: "no-window" | "fullscreen" | "permission" | "accessibility-restore" | "generic"
   ) {
     super(message);
     this.name = "ProviderError";

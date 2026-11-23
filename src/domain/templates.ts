@@ -281,6 +281,8 @@ export function previewFrames(t: Template, n: number, aspect: number): Frame[] {
 // ---- 12 单窗规格（single-layout.lua 1:1 移植） ----
 export interface SingleTemplate extends Template {
   group: string;
+  /** 仅移动：以当前窗口尺寸对齐可用区域的角落。 */
+  corner?: { right: boolean; bottom: boolean };
 }
 
 const SPECS: Array<[string, string, string, string, number, number, number, number]> = [
@@ -314,7 +316,7 @@ const GROUPS: Record<string, string> = {
   "quarter-bottom-right": "1/4 类",
 };
 
-export const singleGroupOrder = ["全屏类", "半屏类", "1/4 类"];
+export const singleGroupOrder = ["全屏类", "半屏类", "1/4 类", "移到角落（保持大小）"];
 
 const GAP_HINTS: Record<number, string> = {
   2: "露出左侧空间，右侧铺满",
@@ -340,6 +342,37 @@ export const singleLayoutTemplates: SingleTemplate[] = SPECS.map((spec, order) =
     ],
   };
 });
+
+for (const [suffix, label, eng, pinyin, right, bottom] of [
+  ["top-left", "左上", "Top Left", "zuoshang", false, false],
+  ["top-right", "右上", "Top Right", "youshang", true, false],
+  ["bottom-left", "左下", "Bottom Left", "zuoxia", false, true],
+  ["bottom-right", "右下", "Bottom Right", "youxia", true, true],
+] as const) {
+  singleLayoutTemplates.push({
+    id: `move-${suffix}`,
+    name: `移到${label}角（保持大小）`,
+    eng: `Move to ${eng}`,
+    keywords: `${pinyin} move corner keep size yidong jiaoluo baochi daxiao`,
+    group: "移到角落（保持大小）",
+    subText: "仅移动到当前屏幕可用区域的角落，不调整窗口大小",
+    order: singleLayoutTemplates.length + 1,
+    corner: { right, bottom },
+  });
+}
+
+/** 超出屏幕的窗口也不缩放：严格按所选边缘对齐。 */
+export function singleTemplateFrame(t: SingleTemplate, region: Region, current: Frame): Frame | undefined {
+  if (t.corner) {
+    return {
+      x: region.x + (t.corner.right ? region.w - current.w : 0),
+      y: region.y + (t.corner.bottom ? region.h - current.h : 0),
+      w: current.w,
+      h: current.h,
+    };
+  }
+  return t.fn?.(1, region)[0];
+}
 
 const singleIndex: Record<string, SingleTemplate> = {};
 for (const t of singleLayoutTemplates) singleIndex[t.id] = t;

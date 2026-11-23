@@ -1,4 +1,4 @@
-// window-layout 命令：12 单窗布局直接选，搜索即滤，Enter 套用
+// window-layout 命令：12 单窗布局 + 4 角落移动，搜索即滤，Enter 套用
 import { LayoutList } from "./views/layout-list";
 
 export default function Command() {

@@ -1,57 +1,89 @@
-import { describe, expect, it } from "vitest";
-import { refusedMessage, sizeUnchanged, sizeText, writeIgnored } from "../src/services/windows/verify";
+import { describe, expect, it, vi } from "vitest";
+import type { TargetWindow } from "../src/domain/types";
+import type { WindowProvider } from "../src/services/windows/types";
+import { applyVerifiedBounds } from "../src/services/windows/verify";
 
-const frame = (x: number, y: number, w: number, h: number) => ({ x, y, w, h });
+const original = { x: 0, y: 104, w: 1440, h: 900 };
+const desired = { x: 0, y: 39, w: 1710, h: 1073 };
+const target: TargetWindow = { id: "123|1", bundleId: "example", appName: "CodeBuddy CN", title: "Editor", bounds: original, fullScreen: false, positionable: true, resizable: true };
+const other = { ...target, id: "123|2", title: "Other" };
 
-describe("sizeUnchanged", () => {
-  it("2pt 以内视为未变化（覆盖取整/步长误差）", () => {
-    expect(sizeUnchanged(frame(0, 0, 1440, 900), frame(0, 0, 1440, 900))).toBe(true);
-    expect(sizeUnchanged(frame(0, 0, 1440, 900), frame(0, 0, 1441.5, 898.5))).toBe(true);
-    expect(sizeUnchanged(frame(0, 0, 1440, 900), frame(0, 0, 1443, 900))).toBe(false);
-    expect(sizeUnchanged(frame(0, 0, 1440, 900), frame(0, 0, 1440, 890))).toBe(false);
-  });
-});
+function provider() {
+  return {
+    setBounds: vi.fn<WindowProvider["setBounds"]>().mockResolvedValue(undefined),
+    setBoundsBatch: vi.fn<WindowProvider["setBoundsBatch"]>().mockResolvedValue(undefined),
+    listWindowsForApp: vi.fn<WindowProvider["listWindowsForApp"]>(),
+  };
+}
 
-describe("writeIgnored", () => {
-  const original = frame(0, 104, 1440, 900);
-
-  it("尺寸完全没变 + 目标要求变化 → 未生效", () => {
-    // CodeBuddy CN 实测：写入 1710×1073 后仍是 1440×900，只有位置漂移
-    expect(writeIgnored(original, frame(0, 39, 1710, 1073), frame(0, 147, 1440, 900))).toBe(true);
-  });
-
-  it("应用按自己的约束收敛（尺寸变了但不是目标值）→ 不算未生效", () => {
-    expect(writeIgnored(original, frame(0, 39, 1710, 1073), frame(0, 39, 1700, 1050))).toBe(false);
-    // 只应用了宽度：也算有响应，不误报
-    expect(writeIgnored(original, frame(0, 39, 1710, 1073), frame(0, 39, 1710, 900))).toBe(false);
+describe("applyVerifiedBounds", () => {
+  it("不重写已经到位的窗口", async () => {
+    const p = provider();
+    expect(await applyVerifiedBounds(p, [{ window: target, frame: original }])).toBeNull();
+    expect(p.setBounds).not.toHaveBeenCalled();
+    expect(p.listWindowsForApp).not.toHaveBeenCalled();
   });
 
-  it("目标尺寸本来就和当前一致 → 不判定失败", () => {
-    expect(writeIgnored(original, frame(0, 104, 1440, 900), frame(0, 104, 1440, 900))).toBe(false);
+  it("允许异步生效，不必重写", async () => {
+    const p = provider();
+    p.listWindowsForApp.mockResolvedValueOnce([target]).mockResolvedValueOnce([{ ...target, bounds: desired }]);
+    expect(await applyVerifiedBounds(p, [{ window: target, frame: desired }])).toBeNull();
+    expect(p.setBounds).toHaveBeenCalledTimes(1);
   });
 
-  it("读不到实际帧（null）→ 保持旧语义，不猜失败", () => {
-    expect(writeIgnored(original, frame(0, 39, 1710, 1073), null)).toBe(false);
+  it("批量写入只重试未达目标的窗口，同 App 每轮仅枚举一次", async () => {
+    const p = provider();
+    const otherFrame = { ...original, x: 240 };
+    const partial = { ...target, bounds: { ...desired, h: original.h } };
+    p.listWindowsForApp.mockResolvedValue([partial, { ...other, bounds: otherFrame }]);
+    const result = await applyVerifiedBounds(p, [
+      { window: target, frame: desired }, { window: other, frame: otherFrame },
+    ]);
+    expect(p.setBoundsBatch).toHaveBeenCalledWith([
+      { window: target, frame: desired, positionOnly: false }, { window: other, frame: otherFrame, positionOnly: true },
+    ]);
+    expect(p.setBounds).toHaveBeenCalledTimes(1);
+    expect(p.setBounds).toHaveBeenCalledWith(partial, desired, false, true);
+    expect(p.listWindowsForApp).toHaveBeenCalledTimes(3);
+    expect(result).toContain("1/2 窗已确认");
+    expect(result).toContain("尺寸未达到目标");
   });
-});
 
-describe("refusedMessage", () => {
-  it("包含实际尺寸、目标尺寸与回滚状态", () => {
-    const msg = refusedMessage("CodeBuddy CN", frame(0, 39, 1710, 1073), frame(0, 147, 1440, 900), true);
-    expect(msg).toContain("CodeBuddy CN");
-    expect(msg).toContain("1440×900");
-    expect(msg).toContain("1710×1073");
-    expect(msg).toContain("已恢复原位置");
+  it("尺寸没变但位置被挪走时，只回滚位置且读回确认", async () => {
+    const p = provider();
+    const moved = { ...target, bounds: { ...original, y: 147 } };
+    p.listWindowsForApp.mockResolvedValueOnce([moved]).mockResolvedValueOnce([moved]).mockResolvedValueOnce([moved]).mockResolvedValueOnce([target]);
+    const result = await applyVerifiedBounds(p, [{ window: target, frame: desired }]);
+    expect(result).toContain("未执行尺寸调整");
+    expect(result).toContain("1440×900");
+    expect(result).toContain("1710×1073");
+    expect(result).toContain("已恢复原位置");
+    expect(p.setBounds).toHaveBeenLastCalledWith(moved, original, true);
   });
 
-  it("回滚失败时不宣称已恢复", () => {
-    const msg = refusedMessage("App", frame(0, 0, 800, 600), frame(0, 0, 400, 300), false);
-    expect(msg).not.toContain("已恢复");
+  it("位置写入没生效也失败；不会冒充已回滚", async () => {
+    const p = provider();
+    p.listWindowsForApp.mockResolvedValue([target]);
+    const move = { ...original, y: desired.y };
+    const result = await applyVerifiedBounds(p, [{ window: target, frame: move }]);
+    expect(result).toContain("未移到目标位置");
+    expect(p.setBounds).toHaveBeenLastCalledWith(target, move, true);
+    expect(p.setBounds).toHaveBeenCalledTimes(2);
   });
-});
 
-describe("sizeText", () => {
-  it("取整后输出 宽×高", () => {
-    expect(sizeText(frame(0, 0, 1710.4, 1072.6))).toBe("1710×1073");
+  it("尺寸已到位但位置未到位时，只重试移动，不启用缩放兼容处理", async () => {
+    const p = provider();
+    const resized = { ...target, bounds: { ...desired, y: 80 } };
+    p.listWindowsForApp.mockResolvedValueOnce([resized]).mockResolvedValueOnce([resized])
+      .mockResolvedValueOnce([{ ...target, bounds: desired }]);
+    expect(await applyVerifiedBounds(p, [{ window: target, frame: desired }])).toBeNull();
+    expect(p.setBounds.mock.calls).toEqual([[target, desired, false], [resized, desired, true]]);
+  });
+
+  it("同一索引现在指向别的窗口时不冒充成功，也不重写", async () => {
+    const p = provider();
+    p.listWindowsForApp.mockResolvedValue([{ ...target, title: other.title, bounds: desired }]);
+    expect(await applyVerifiedBounds(p, [{ window: target, frame: desired }])).toContain("不能确认布局");
+    expect(p.setBounds).toHaveBeenCalledTimes(1);
   });
 });

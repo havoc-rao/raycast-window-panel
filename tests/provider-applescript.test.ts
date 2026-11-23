@@ -280,6 +280,18 @@ describe("batch writes (replay fast path)", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("does not write sizes for position-only entries in a mixed batch", async () => {
+    output("OK" + SEP + "OK");
+    await provider.setBoundsBatch([
+      { window: w1, frame: { ...w1.bounds, x: 10 }, positionOnly: true },
+      { window: w2, frame: { x: 400, y: 20, w: 300, h: 200 } },
+    ]);
+    const script = run.mock.calls[0][0];
+    expect(script).toContain("set position of window 3");
+    expect(script).not.toContain("set size of window 3");
+    expect(script).toContain("set size of window 4");
+  });
+
   it("skips scripts entirely for an empty batch", async () => {
     await provider.setBoundsBatch([]);
     expect(run).not.toHaveBeenCalled();

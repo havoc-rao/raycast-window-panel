@@ -18,7 +18,7 @@ import { screenRegionForWindow } from "../../utils/geometry";
 
 const RAYCAST_NAME = "Raycast";
 /** 与 assets/windowkit.swift 的 WINDOWKIT_VERSION 保持一致；不一致时重新编译/重建 helper */
-const WINDOWKIT_VERSION = 7;
+const WINDOWKIT_VERSION = 9;
 const CACHE_DIR = path.join(os.homedir(), "Library", "Caches", "raycast-window-panel");
 const BIN_NAME = "windowkit";
 const SOCK_NAME = "windowkit.sock";
@@ -458,7 +458,7 @@ export class WindowKitProvider implements WindowProvider {
     return this.enumerateScreens();
   }
 
-  async setBounds(w: TargetWindow, frame: Frame): Promise<void> {
+  async setBounds(w: TargetWindow, frame: Frame, positionOnly = false, resizeCompatibilityRetry = false): Promise<void> {
     const parts = w.id.split("|");
     const pid = Number(parts[0]);
     const index = Number(parts[1]);
@@ -466,13 +466,14 @@ export class WindowKitProvider implements WindowProvider {
       throw new ProviderError("窗口句柄失效，请重新打开面板", "no-window");
     }
     await ensurePanelClosed();
-    const err = await this.writeBounds(w, frame);
+    const err = await this.writeBounds(w, frame, positionOnly, resizeCompatibilityRetry);
+    if (err === "enhanced-ui-restore-failed") throw this.toProviderError(err);
     if (err) {
       // 偶发失败重试一次：重置面板关闭记忆 + 等待 300ms 后重写
       resetPanelCloseMemo();
       await sleep(300);
       await ensurePanelClosed();
-      const err2 = await this.writeBounds(w, frame);
+      const err2 = await this.writeBounds(w, frame, positionOnly, resizeCompatibilityRetry);
       if (err2) throw this.toProviderError(err2);
     }
   }
@@ -489,13 +490,16 @@ export class WindowKitProvider implements WindowProvider {
     }
     await ensurePanelClosed();
     const failed = await this.writeBoundsBatch(items);
+    if (failed.some(({ error }) => error === "enhanced-ui-restore-failed")) {
+      throw this.toProviderError("enhanced-ui-restore-failed");
+    }
     if (failed.length > 0) {
       // 偶发失败整体重试一次（仅失败项）
       resetPanelCloseMemo();
       await sleep(300);
       await ensurePanelClosed();
       const still = await this.writeBoundsBatch(failed);
-      if (still.length > 0) throw this.toProviderError(still[0].error);
+      if (still.length > 0) throw this.toProviderError(still.find(({ error }) => error === "enhanced-ui-restore-failed")?.error ?? still[0].error);
     }
   }
 
@@ -569,12 +573,12 @@ export class WindowKitProvider implements WindowProvider {
     };
   }
 
-  private async writeBounds(w: TargetWindow, frame: Frame): Promise<string | null> {
+  private async writeBounds(w: TargetWindow, frame: Frame, positionOnly: boolean, resizeCompatibilityRetry: boolean): Promise<string | null> {
     const parts = w.id.split("|");
     const pid = Number(parts[0]);
     const index = Number(parts[1]);
     const res = await this.client.request<Array<{ ok?: boolean; error?: string }>>("setbounds", {
-      items: [{ pid, index, x: frame.x, y: frame.y, w: frame.w, h: frame.h }],
+      items: [{ pid, index, x: frame.x, y: frame.y, w: frame.w, h: frame.h, positionOnly, resizeCompatibilityRetry }],
     });
     const first = res?.[0];
     if (!first) return "no-result";
@@ -589,7 +593,10 @@ export class WindowKitProvider implements WindowProvider {
         const parts = it.window.id.split("|");
         const pid = Number(parts[0]);
         const index = Number(parts[1]);
-        return { pid, index, x: it.frame.x, y: it.frame.y, w: it.frame.w, h: it.frame.h };
+        return {
+          pid, index, x: it.frame.x, y: it.frame.y, w: it.frame.w, h: it.frame.h,
+          positionOnly: it.positionOnly, resizeCompatibilityRetry: it.resizeCompatibilityRetry,
+        };
       }),
     });
     const failed: Array<BoundsWrite & { error: string }> = [];
@@ -601,6 +608,9 @@ export class WindowKitProvider implements WindowProvider {
   }
 
   private toProviderError(err: string): ProviderError {
+    if (err === "enhanced-ui-restore-failed") {
+      return new ProviderError("未能恢复目标 App 的增强辅助功能状态，请重新打开该 App", "accessibility-restore");
+    }
     const hint = /-?10000|处理程序失败/.test(err)
       ? `窗口移动被系统拒绝（-10000）：System Events 写入异常，请确认已给 Raycast 辅助功能权限后重试 (${err.replace(/\n/g, " ").slice(0, 120)})`
       : `窗口可能已关闭或无法调整：${err.replace(/\n/g, " ").slice(0, 160)}`;

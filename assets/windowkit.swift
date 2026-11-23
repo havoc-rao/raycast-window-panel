@@ -10,7 +10,7 @@
 //   window            params {bundleId?|name?} → 该 App 焦点窗（AXFocusedWindow→AXMainWindow 兜底）信息或 null
 //   windows           params {bundleId?|name?} → 全部（或该 App 的）标准窗口列表
 //   screens           → [{x,y,w,h}]（AX 坐标系：主屏原点在左上，y 向下）
-//   setbounds         params {items:[{pid,index,x,y,w,h}]} → [{ok:bool,error?}]
+//   setbounds         params {items:[{pid,index,x,y,w,h,positionOnly?,resizeCompatibilityRetry?}]} → [{ok:bool,error?}]
 //   raise             params {pid,index}
 //   quit              → 退出并清理 socket
 import Foundation
@@ -18,7 +18,7 @@ import AppKit
 import ApplicationServices
 import Darwin
 
-let WINDOWKIT_VERSION = 7
+let WINDOWKIT_VERSION = 9
 // Register this headless helper with AppKit so display-change notifications refresh NSScreen.
 let application = NSApplication.shared
 application.setActivationPolicy(.prohibited)
@@ -183,6 +183,21 @@ func setFrame(_ el: AXUIElement, _ x: Double, _ y: Double, _ w: Double, _ h: Dou
   })
 }
 
+// Chromium/Electron may ignore AX geometry writes while Enhanced UI is on
+// (Chromium issue 40870998). Limit the workaround to a verified resize retry,
+// never enable the flag on an app that didn't have it, and leave VoiceOver alone.
+func withResizeCompatibility(
+  voiceOverEnabled: Bool,
+  enhancedUIEnabled: () -> Bool,
+  setEnhancedUI: (Bool) -> Bool,
+  write: () -> String?
+) -> String? {
+  guard !voiceOverEnabled, enhancedUIEnabled(), setEnhancedUI(false) else { return write() }
+  let error = write()
+  guard setEnhancedUI(true) else { return "enhanced-ui-restore-failed" }
+  return error
+}
+
 func screensJson() -> [[String: Any]] {
   let ss = NSScreen.screens
   guard let primary = ss.first else { return [] }
@@ -256,7 +271,30 @@ func dispatch(_ op: String, _ params: [String: Any]) -> OpResult {
         out.append(["ok": false, "error": "no-window"])
         continue
       }
-      if let err = setFrame(wins[index - 1], x, y, w, h) {
+      let error: String?
+      if it["positionOnly"] as? Bool == true {
+        var point = CGPoint(x: x, y: y)
+        if x.isFinite, y.isFinite, let value = AXValueCreate(.cgPoint, &point) {
+          let status = AXUIElementSetAttributeValue(wins[index - 1], kAXPositionAttribute as CFString, value)
+          error = status == .success ? nil : "position:\(status.rawValue)"
+        } else {
+          error = "invalid-position"
+        }
+      } else if it["resizeCompatibilityRetry"] as? Bool == true {
+        let app = AXUIElementCreateApplication(pid)
+        let attr = "AXEnhancedUserInterface" as CFString
+        error = withResizeCompatibility(
+          voiceOverEnabled: NSWorkspace.shared.isVoiceOverEnabled,
+          enhancedUIEnabled: { axBool(app, attr, default: false) },
+          setEnhancedUI: { value in
+            AXUIElementSetAttributeValue(app, attr, value ? kCFBooleanTrue : kCFBooleanFalse) == .success
+          },
+          write: { setFrame(wins[index - 1], x, y, w, h) }
+        )
+      } else {
+        error = setFrame(wins[index - 1], x, y, w, h)
+      }
+      if let err = error {
         out.append(["ok": false, "error": err])
       } else {
         out.append(["ok": true])

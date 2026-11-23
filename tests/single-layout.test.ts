@@ -1,108 +1,96 @@
-// 单窗布局的动作层：写入后校验（AX 成功 ≠ 应用照做）
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Frame } from "../src/domain/types";
+import type { LayoutsData } from "../src/domain/types";
 
 const h = vi.hoisted(() => ({
-  bump: vi.fn(async () => {}),
+  data: {} as LayoutsData,
+  bumpSingleRecent: vi.fn(),
+  getArrangeTemplate: vi.fn(),
+  setArrangeTemplate: vi.fn(),
+  bumpArrangeRecent: vi.fn(),
   provider: {
     getActiveWindow: vi.fn(),
     getScreenRegion: vi.fn(),
+    getAllScreens: vi.fn(),
+    listWindowsOnActiveDesktop: vi.fn(),
     listWindowsForApp: vi.fn(),
-    setBounds: vi.fn(async () => {}),
+    setBounds: vi.fn(),
+    raise: vi.fn(),
   },
 }));
 
 vi.mock("@raycast/api", () => ({ getFrontmostApplication: vi.fn(), closeMainWindow: vi.fn() }));
 vi.mock("../src/services/windows/provider", () => ({ getProvider: async () => h.provider }));
 vi.mock("../src/services/storage/repository", () => ({
-  loadLayouts: () => ({ windows: {}, snapshot: undefined }),
+  loadLayouts: () => h.data,
   persistLayouts: vi.fn(),
-  memory: { bumpSingleRecent: h.bump },
+  memory: h,
 }));
 
-import { applySingleLayout } from "../src/services/actions";
+import { applySingleLayout, replayAppCommand, replayMemoryCommand, runArrange } from "../src/services/actions";
 
-/** 复现截图里的场景：CodeBuddy CN 窗口 1440×900 @ (0,104)，屏幕可用区 1710×1073 @ (0,39) */
 const target = {
-  id: "81685|1",
-  appName: "CodeBuddy CN",
-  bundleId: "com.tencent.codebuddycn",
-  title: "chatgpt-reverse",
-  bounds: { x: 0, y: 104, w: 1440, h: 900 },
-  fullScreen: false,
-  positionable: true,
-  resizable: true,
+  id: "81685|1", appName: "CodeBuddy CN", bundleId: "com.tencent.codebuddycn", title: "Editor",
+  bounds: { x: 0, y: 104, w: 1440, h: 900 }, fullScreen: false, positionable: true, resizable: true,
 };
 const region = { x: 0, y: 39, w: 1710, h: 1073 };
-const maximized = region;
-
-function seen(bounds: Frame) {
-  return [{ ...target, bounds }];
-}
+const key = target.bundleId + "|" + target.title;
+const record = { id: target.id, bundleID: target.bundleId, title: target.title, frame: region };
 
 beforeEach(() => {
-  h.bump.mockClear();
-  h.provider.getActiveWindow.mockReset().mockResolvedValue({ ...target, bounds: { ...target.bounds } });
-  h.provider.getScreenRegion.mockReset().mockResolvedValue({ ...region });
-  h.provider.setBounds.mockReset().mockResolvedValue(undefined);
-  h.provider.listWindowsForApp.mockReset();
+  vi.resetAllMocks();
+  h.data = { windows: {} };
+  h.provider.getActiveWindow.mockResolvedValue(target);
+  h.provider.getScreenRegion.mockResolvedValue(region);
+  h.provider.getAllScreens.mockResolvedValue([{ frame: region }]);
+  h.provider.listWindowsOnActiveDesktop.mockResolvedValue([]);
+  h.provider.listWindowsForApp.mockResolvedValue([target]);
 });
 
-describe("applySingleLayout 写入后校验", () => {
-  it("应用照做 → 成功且只写一次", async () => {
-    h.provider.listWindowsForApp.mockResolvedValue(seen(maximized));
-    const r = await applySingleLayout("maximize");
-    expect(r).toEqual({ ok: true, message: "当前窗口布局：铺满可用屏幕" });
+describe("所有布局入口按实际结果反馈", () => {
+  it("单窗布局确认生效后更新最近使用", async () => {
+    h.provider.listWindowsForApp.mockResolvedValue([{ ...target, bounds: region }]);
+    expect(await applySingleLayout("maximize")).toEqual({ ok: true, message: "当前窗口布局：铺满可用屏幕" });
     expect(h.provider.setBounds).toHaveBeenCalledTimes(1);
-    expect(h.bump).toHaveBeenCalledWith("maximize", expect.any(Function));
+    expect(h.bumpSingleRecent).toHaveBeenCalledWith("maximize", expect.any(Function));
   });
 
-  it("AX 接受但尺寸没变 → 重试一次、回滚原帧、报错且不记最近", async () => {
-    // 真实表现：位置漂到 (0,147)，尺寸仍是 1440×900
-    h.provider.listWindowsForApp.mockResolvedValue(seen({ x: 0, y: 147, w: 1440, h: 900 }));
-    const r = await applySingleLayout("maximize");
-
-    expect(r.ok).toBe(false);
-    expect(r.message).toContain("CodeBuddy CN");
-    expect(r.message).toContain("1440×900");
-    expect(r.message).toContain("1710×1073");
-    expect(r.message).toContain("已恢复原位置");
-
-    expect(h.provider.setBounds).toHaveBeenCalledTimes(3); // 写入 → 重试 → 回滚
-    expect(h.provider.setBounds.mock.calls[2][1]).toEqual(target.bounds);
-    expect(h.bump).not.toHaveBeenCalled();
+  it("截图里的自动排布全屏没有改尺寸时不能报成功或更新上次样式", async () => {
+    const result = await runArrange("maximize");
+    expect(result).toMatchObject({ ok: false, message: expect.stringContaining("未执行尺寸调整") });
+    expect(h.setArrangeTemplate).not.toHaveBeenCalled();
+    expect(h.bumpArrangeRecent).not.toHaveBeenCalled();
+    expect(h.provider.raise).not.toHaveBeenCalled();
   });
 
-  it("第一次没生效、重试后生效 → 成功", async () => {
-    h.provider.listWindowsForApp
-      .mockResolvedValueOnce(seen({ x: 0, y: 147, w: 1440, h: 900 }))
-      .mockResolvedValueOnce(seen(maximized));
-    const r = await applySingleLayout("maximize");
-    expect(r.ok).toBe(true);
-    expect(h.provider.setBounds).toHaveBeenCalledTimes(2);
-    expect(h.bump).toHaveBeenCalled();
+  it("自动排布确认生效后仍保存模板", async () => {
+    h.provider.listWindowsForApp.mockResolvedValue([{ ...target, bounds: region }]);
+    expect(await runArrange("maximize")).toEqual({ ok: true, message: "已排布: 全屏 (1 窗)" });
+    expect(h.setArrangeTemplate).toHaveBeenCalledWith(1, "maximize");
   });
 
-  it("读不回窗口（已关闭/通道异常）→ 不误报失败", async () => {
-    h.provider.listWindowsForApp.mockRejectedValue(new Error("windowkit 通道不可用"));
-    const r = await applySingleLayout("maximize");
-    expect(r.ok).toBe(true);
+  it("重放我的布局也检查尺寸", async () => {
+    h.data.snapshot = { savedAt: 1, count: 1, frames: [region] };
+    expect(await runArrange("replay")).toMatchObject({ ok: false, message: expect.stringContaining("未执行尺寸调整") });
+    expect(h.provider.setBounds).toHaveBeenCalledWith(target, region, false);
   });
 
-  it("已经铺满（目标尺寸等于原尺寸）→ 单次写入、成功", async () => {
-    h.provider.getActiveWindow.mockResolvedValue({ ...target, bounds: { ...maximized } });
-    h.provider.listWindowsForApp.mockResolvedValue(seen(maximized));
-    const r = await applySingleLayout("maximize");
-    expect(r.ok).toBe(true);
-    expect(h.provider.setBounds).toHaveBeenCalledTimes(1);
+  it.each(["App", "单条"])("重放%s记忆未变更时不报成功", async (mode) => {
+    h.data.windows[key] = record;
+    const result = mode === "App" ? await replayAppCommand(target.bundleId) : await replayMemoryCommand(key);
+    expect(result).toMatchObject({ ok: false, message: expect.stringContaining("未执行尺寸调整") });
+    expect(h.provider.setBounds).toHaveBeenCalledWith(target, region, false);
   });
 
-  it("写入本身报错 → 原样转为失败提示，不做回滚", async () => {
+  it("屏幕信息不可用时不重放记忆", async () => {
+    h.data.windows[key] = record;
+    h.provider.getAllScreens.mockResolvedValue([]);
+    expect(await replayMemoryCommand(key)).toMatchObject({ ok: false, message: expect.stringContaining("无法读取当前屏幕") });
+    expect(h.provider.setBounds).not.toHaveBeenCalled();
+  });
+
+  it("底层写入报错时保持原始错误", async () => {
     h.provider.setBounds.mockRejectedValue(new Error("窗口可能已关闭或无法调整"));
-    const r = await applySingleLayout("maximize");
-    expect(r.ok).toBe(false);
-    expect(r.message).toContain("窗口可能已关闭");
-    expect(h.provider.setBounds).toHaveBeenCalledTimes(1);
+    expect(await applySingleLayout("maximize")).toEqual({ ok: false, message: "窗口可能已关闭或无法调整" });
     expect(h.provider.listWindowsForApp).not.toHaveBeenCalled();
   });
 });

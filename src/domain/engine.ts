@@ -217,17 +217,14 @@ function removeByKey(layouts: LayoutsData, key: string, info: { bundleID: string
   return { removed: true, key, matches, message: "已解除记忆: " + info.title };
 }
 
-/** 在全部窗口中找记忆对应的窗口：先 id，再 bundleID+标题，最后同 bundleID 首个（按窗口列表迭代序，与 Lua 一致） */
-export function findWindowFor(info: WindowRecord, windows: TargetWindow[]): TargetWindow | undefined {
-  let fallback: TargetWindow | undefined;
-  for (const w of windows) {
-    if (info.id !== undefined && info.id !== "" && String(info.id) === w.id) return w;
-    if (w.bundleId === info.bundleID) {
-      if (w.title === info.title) return w;
-      if (!fallback) fallback = w;
-    }
-  }
-  return fallback;
+/** 按 App 和标题查找；pid|index 会漂移，只用于同标题候选的消歧。 */
+export function findWindowFor(info: WindowRecord, windows: TargetWindow[], allowFallback = false): TargetWindow | undefined {
+  const appWindows = windows.filter((w) => w.bundleId === info.bundleID);
+  const matches = appWindows.filter((w) => w.title === info.title);
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) return matches.find((w) => w.id === String(info.id));
+  // 仅一个记忆、一个候选时才允许标题已变的窗口恢复；不任意挪动别的窗口。
+  return allowFallback && appWindows.length === 1 ? appWindows[0] : undefined;
 }
 
 export interface ReplayAppPlan {
@@ -248,16 +245,13 @@ export function replayAppWindows(
   let count = 0;
   const windows: TargetWindow[] = [];
   const frames: Frame[] = [];
-  for (const info of Object.values(layouts.windows)) {
-    if (info.bundleID === bundleId) {
-      const target = findWindowFor(info, allWindows);
-      // 目标去重：多条旧记忆（标题已变的兜底）可能命中同一窗口，只保留第一条，
-      // 避免同一窗口被连续写成不同位置（重复写既慢又产生跳变）。
-      if (target && !windows.some((w) => w.id === target.id)) {
-        windows.push(target);
-        frames.push(clampFrame(info.frame, screens));
-        count += 1;
-      }
+  const records = Object.values(layouts.windows).filter((info) => info.bundleID === bundleId);
+  for (const info of records) {
+    const target = findWindowFor(info, allWindows, records.length === 1);
+    if (target && !windows.some((w) => w.id === target.id)) {
+      windows.push(target);
+      frames.push(clampFrame(info.frame, screens));
+      count += 1;
     }
   }
   return {

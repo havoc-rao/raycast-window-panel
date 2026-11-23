@@ -14,7 +14,8 @@ it.skipIf(process.platform !== "darwin")("production Swift writer has no settlin
   const dir = path.join(__dirname, "../.cache/frame-test");
   fs.mkdirSync(dir, { recursive: true });
   const test = path.join(dir, "main.swift");
-  fs.writeFileSync(test, "import Foundation\nimport CoreGraphics\n" + source.slice(start, end) + `
+  const compat = writer.slice(writer.indexOf("func withResizeCompatibility("));
+  fs.writeFileSync(test, "import Foundation\nimport CoreGraphics\n" + source.slice(start, end) + compat + `
 let target = CGRect(x: -1920, y: 25, width: 1920, height: 1055)
 var events: [String] = []
 let result = applyFrame(target, position: { events.append("position"); return nil }, size: { events.append("size"); return nil })
@@ -23,6 +24,14 @@ assert(events == ["position", "size", "position"])
 assert(applyFrame(target, position: { "position-denied" }, size: { fatalError() }) == "position-denied")
 assert(applyFrame(target, position: { nil }, size: { "size-denied" }) == "size-denied")
 assert(applyFrame(CGRect(x: 0, y: 0, width: 0, height: 10), position: { fatalError() }, size: { fatalError() }) == "invalid-frame")
+events = []
+assert(withResizeCompatibility(voiceOverEnabled: false, enhancedUIEnabled: { true }, setEnhancedUI: {
+  events.append($0 ? "restore" : "disable"); return true
+}, write: { events.append("write"); return "write-failed" }) == "write-failed")
+assert(events == ["disable", "write", "restore"])
+assert(withResizeCompatibility(voiceOverEnabled: true, enhancedUIEnabled: { fatalError() }, setEnhancedUI: { _ in fatalError() }, write: { nil }) == nil)
+assert(withResizeCompatibility(voiceOverEnabled: false, enhancedUIEnabled: { false }, setEnhancedUI: { _ in fatalError() }, write: { nil }) == nil)
+assert(withResizeCompatibility(voiceOverEnabled: false, enhancedUIEnabled: { true }, setEnhancedUI: { $0 == false }, write: { nil }) == "enhanced-ui-restore-failed")
 print("frame passed")
 `);
   const binary = path.join(dir, "test");

@@ -1,5 +1,5 @@
-// 12 单窗布局列表（window-layout 命令与 window-panel 子菜单共用）
-// 组顺序固定（全屏类/半屏类/1/4 类），组内最近用过置前（带「最近」标记）
+// 12 单窗布局 + 4 角落移动（window-layout 命令与 window-panel 子菜单共用）
+// 组顺序固定，组内最近用过置前（带「最近」标记）
 import { Action, ActionPanel, Icon, List } from "@raycast/api";
 import { useEffect, useState } from "react";
 import { applySingleLayout } from "../services/actions";
@@ -33,7 +33,7 @@ export function LayoutList() {
   };
 
   return (
-    <List isLoading={busy} searchBarPlaceholder="搜索布局（如：半屏、1/4、居中）" navigationTitle="当前窗口布局">
+    <List isLoading={busy} searchBarPlaceholder="搜索布局（如：半屏、1/4、移到角落）" navigationTitle="当前窗口布局">
       {singleGroupOrder.map((group) => (
         <List.Section key={group} title={group}>
           {ordered
@@ -42,6 +42,7 @@ export function LayoutList() {
               <List.Item
                 key={t.id}
                 title={t.name}
+                keywords={t.keywords?.split(" ")}
                 subtitle={t.eng + (recentSet.has(t.id) ? "  · 最近" : "")}
                 icon={{ source: Icon.Window, tintColor: { light: ACCENT, dark: ACCENT, adjustContrast: false } }}
                 actions={

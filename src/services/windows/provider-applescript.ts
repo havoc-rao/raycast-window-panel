@@ -20,8 +20,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** AX may constrain a move using the old size; restore position after resizing.
  * This script only reports write errors — a successful write can still be ignored by
  * the app. Provider-agnostic "did the window actually resize?" verification lives in
- * services/windows/verify.ts (single-window layout), so no read-back is done here. */
-function boundsWriteScript(pid: number, index: number, frame: Frame): string {
+ * services/windows/verify.ts for all layouts, so no read-back is done here. */
+function boundsWriteScript(pid: number, index: number, frame: Frame, positionOnly = false): string {
+  if (positionOnly) return `set p to a reference to (first application process whose unix id is ${pid})
+    set position of window ${index} of p to {${frame.x}, ${frame.y}}`;
   return `set p to a reference to (first application process whose unix id is ${pid})
     set position of window ${index} of p to {${frame.x}, ${frame.y}}
     set size of window ${index} of p to {${frame.w}, ${frame.h}}
@@ -382,7 +384,7 @@ out.join("|");
     return this.enumerateScreens();
   }
 
-  async setBounds(w: TargetWindow, frame: Frame): Promise<void> {
+  async setBounds(w: TargetWindow, frame: Frame, positionOnly = false): Promise<void> {
     const parts = w.id.split("|");
     const pid = Number(parts[0]);
     const index = Number(parts[1]);
@@ -390,13 +392,13 @@ out.join("|");
       throw new ProviderError("窗口句柄失效，请重新打开面板", "no-window");
     }
     await ensurePanelClosed();
-    const r = await this.writeBounds(pid, index, frame);
+    const r = await this.writeBounds(pid, index, frame, positionOnly);
     if (!(r.ok && r.output === "OK")) {
       // 偶发失败重试一次：重置面板关闭记忆 + 等待 300ms 后重写
       resetPanelCloseMemo();
       await sleep(300);
       await ensurePanelClosed();
-      const r2 = await this.writeBounds(pid, index, frame);
+      const r2 = await this.writeBounds(pid, index, frame, positionOnly);
       if (!(r2.ok && r2.output === "OK")) {
         const err = r2.ok ? r2.output : r2.error;
         const hint = /-?10000|处理程序失败/.test(err)
@@ -410,11 +412,12 @@ out.join("|");
   private async writeBounds(
     pid: number,
     index: number,
-    frame: Frame
+    frame: Frame,
+    positionOnly = false
   ): Promise<{ ok: boolean; output: string; error: string }> {
     const script = `tell application "System Events"
   try
-    ${boundsWriteScript(pid, index, frame)}
+    ${boundsWriteScript(pid, index, frame, positionOnly)}
     return "OK"
   on error errMsg number errNum
     return "ERR|" & errNum & "|" & errMsg
@@ -454,7 +457,7 @@ end tell`;
   set end of out to item${i}`;
         }
         return `  try
-    ${boundsWriteScript(pid, index, it.frame)}
+    ${boundsWriteScript(pid, index, it.frame, it.positionOnly)}
     set item${i} to "OK"
   on error errMsg number errNum
     set item${i} to "ERR|" & errNum & "|" & errMsg

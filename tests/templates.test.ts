@@ -7,6 +7,7 @@ import {
   singleLayoutById,
   singleLayoutTemplates,
   singleTemplatesOrdered,
+  singleTemplateFrame,
   specialTemplates,
   templateApplies,
   templateById,
@@ -20,9 +21,9 @@ describe("layoutTemplates 注册表", () => {
     expect(new Set(ids).size).toBe(ids.length);
     for (const t of layoutTemplates) expect(templateById(t.id)).toBe(t);
   });
-  it("12 单窗规格 + 15 排布模板 + 2 特殊项", () => {
+  it("12 单窗规格 + 4 角落移动 + 15 排布模板 + 2 特殊项", () => {
     expect(layoutTemplates).toHaveLength(15);
-    expect(singleLayoutTemplates).toHaveLength(12);
+    expect(singleLayoutTemplates).toHaveLength(16);
     expect(specialTemplates.map((t) => t.id)).toEqual(["save-layout", "replay-layout"]);
   });
   it("特殊项有 special 标记且无 fn", () => {
@@ -116,6 +117,32 @@ describe("12 单窗规格几何", () => {
     expect(singleLayoutById("full-left-gap")?.subText).toBe("露出左侧空间，右侧铺满");
     expect(singleLayoutById("full-right-gap")?.subText).toBe("露出右侧空间，左侧铺满");
     expect(singleLayoutById("half-left")?.subText).toBe("仅调整当前窗口，不影响其他窗口");
+  });
+});
+
+describe("移到角落（保持大小）", () => {
+  const region = { x: -1920, y: 25, w: 1920, h: 1055 };
+  const current = { x: -1600, y: 200, w: 800, h: 600 };
+  it.each([
+    ["top-left", -1920, 25],
+    ["top-right", -800, 25],
+    ["bottom-left", -1920, 480],
+    ["bottom-right", -800, 480],
+  ])("%s 使用当前屏幕可用区域且不改尺寸", (suffix, x, y) => {
+    const template = singleLayoutById(`move-${suffix}`)!;
+    expect(template.fn).toBeUndefined();
+    expect(singleTemplateFrame(template, region, current)).toEqual({ x, y, w: 800, h: 600 });
+    expect(current).toEqual({ x: -1600, y: 200, w: 800, h: 600 });
+  });
+  it("超大窗口也不缩放", () => {
+    expect(singleTemplateFrame(singleLayoutById("move-bottom-right")!, region, { ...current, w: 2200, h: 1200 }))
+      .toEqual({ x: -2200, y: -120, w: 2200, h: 1200 });
+  });
+  it("角落组支持 MRU，既有布局几何保持不变", () => {
+    const { ordered } = singleTemplatesOrdered(["move-bottom-right"]);
+    expect(ordered.filter((t) => t.corner)[0].id).toBe("move-bottom-right");
+    expect(singleTemplateFrame(singleLayoutById("quarter-top-left")!, region, current))
+      .toEqual({ x: -1920, y: 25, w: 960, h: 527.5 });
   });
 });
 
