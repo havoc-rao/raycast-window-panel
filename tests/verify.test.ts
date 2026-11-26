@@ -86,4 +86,64 @@ describe("applyVerifiedBounds", () => {
     expect(await applyVerifiedBounds(p, [{ window: target, frame: desired }])).toContain("不能确认布局");
     expect(p.setBounds).toHaveBeenCalledTimes(1);
   });
+
+  it("窗口索引重排且标题变更时，凭原生 windowId 仍能读回并触发缩放兼容重试一次成功", async () => {
+    const p = { ...provider(), readWindows: vi.fn<NonNullable<WindowProvider["readWindows"]>>() };
+    const electronTarget: TargetWindow = { ...target, id: "123|2", windowId: 5001 };
+    const shiftedUnchanged: TargetWindow = { ...electronTarget, id: "123|1", title: "Editor — updated", bounds: original };
+    const shiftedApplied: TargetWindow = { ...shiftedUnchanged, bounds: desired };
+    p.readWindows
+      .mockResolvedValueOnce([shiftedUnchanged])
+      .mockResolvedValueOnce([shiftedUnchanged])
+      .mockResolvedValueOnce([shiftedApplied]);
+    expect(await applyVerifiedBounds(p, [{ window: electronTarget, frame: desired }])).toBeNull();
+    expect(p.listWindowsForApp).not.toHaveBeenCalled();
+    expect(p.setBounds).toHaveBeenNthCalledWith(1, electronTarget, desired, false);
+    expect(p.setBounds).toHaveBeenNthCalledWith(2, shiftedUnchanged, desired, false, true);
+  });
+
+  it("原 windowId 消失后即使同索引出现新窗口，也不误认成功", async () => {
+    const p = { ...provider(), readWindows: vi.fn<NonNullable<WindowProvider["readWindows"]>>() };
+    const originalWin: TargetWindow = { ...target, windowId: 5001 };
+    p.readWindows.mockResolvedValue([{ ...target, windowId: 9999, bounds: desired }]);
+    expect(await applyVerifiedBounds(p, [{ window: originalWin, frame: desired }])).toContain("不能确认布局");
+    expect(p.setBounds).toHaveBeenCalledTimes(1);
+  });
+
+  it("缩放兼容重试后若 AX 短暂不可读，额外等待一轮即可确认生效", async () => {
+    const p = { ...provider(), readWindows: vi.fn<NonNullable<WindowProvider["readWindows"]>>() };
+    const electronTarget: TargetWindow = { ...target, windowId: 5001 };
+    p.readWindows
+      .mockResolvedValueOnce([electronTarget])
+      .mockResolvedValueOnce([electronTarget])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ ...electronTarget, bounds: desired }]);
+    expect(await applyVerifiedBounds(p, [{ window: electronTarget, frame: desired }])).toBeNull();
+    expect(p.setBounds).toHaveBeenCalledTimes(2);
+  });
+
+  it("缩放兼容重试后尺寸已到位但原点被旧尺寸夹住，补一次仅移动即可首次成功", async () => {
+    const p = { ...provider(), readWindows: vi.fn<NonNullable<WindowProvider["readWindows"]>>() };
+    const electronTarget: TargetWindow = { ...target, windowId: 5001 };
+    const resizedClamped: TargetWindow = { ...electronTarget, bounds: { ...desired, x: 120 } };
+    p.readWindows
+      .mockResolvedValueOnce([electronTarget])
+      .mockResolvedValueOnce([electronTarget])
+      .mockResolvedValueOnce([resizedClamped])
+      .mockResolvedValueOnce([{ ...electronTarget, bounds: desired }]);
+    expect(await applyVerifiedBounds(p, [{ window: electronTarget, frame: desired }])).toBeNull();
+    expect(p.setBounds.mock.calls).toEqual([
+      [electronTarget, desired, false],
+      [electronTarget, desired, false, true],
+      [resizedClamped, desired, true],
+    ]);
+  });
+
+  it("无 windowId 兜底时，同进程唯一同标题窗口发生索引漂移仍可恢复校验", async () => {
+    const p = provider();
+    const shifted = { ...target, id: "123|2", bounds: desired };
+    p.listWindowsForApp.mockResolvedValue([shifted, { ...other, id: "123|1" }]);
+    expect(await applyVerifiedBounds(p, [{ window: target, frame: desired }])).toBeNull();
+    expect(p.setBounds).toHaveBeenCalledTimes(1);
+  });
 });

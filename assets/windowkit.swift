@@ -8,17 +8,17 @@
 // op：
 //   ping              → {"version": N}
 //   window            params {bundleId?|name?} → 该 App 焦点窗（AXFocusedWindow→AXMainWindow 兜底）信息或 null
-//   windows           params {bundleId?|name?} → 全部（或该 App 的）标准窗口列表
+//   windows           params {bundleId?|name?|pids?} → 全部（或指定 App / PID 的）窗口列表
 //   screens           → [{x,y,w,h}]（AX 坐标系：主屏原点在左上，y 向下）
-//   setbounds         params {items:[{pid,index,x,y,w,h,positionOnly?,resizeCompatibilityRetry?}]} → [{ok:bool,error?}]
-//   raise             params {pid,index}
+//   setbounds         params {items:[{pid,index,windowId?,x,y,w,h,positionOnly?,resizeCompatibilityRetry?}]} → [{ok:bool,error?}]
+//   raise             params {pid,index,windowId?}
 //   quit              → 退出并清理 socket
 import Foundation
 import AppKit
 import ApplicationServices
 import Darwin
 
-let WINDOWKIT_VERSION = 9
+let WINDOWKIT_VERSION = 10
 // Register this headless helper with AppKit so display-change notifications refresh NSScreen.
 let application = NSApplication.shared
 application.setActivationPolicy(.prohibited)
@@ -43,6 +43,7 @@ struct Win {
   var appName: String = ""
   var bundleId: String = ""
   var index: Int = 0
+  var windowId: UInt32 = 0
   var title: String = ""
   var x: Double = 0, y: Double = 0, w: Double = 0, h: Double = 0
   var subrole: String = ""
@@ -51,13 +52,26 @@ struct Win {
   var resizable = true
 
   var json: [String: Any] {
-    ["pid": pid, "appName": appName, "bundleId": bundleId, "index": index,
-     "title": title, "x": x, "y": y, "w": w, "h": h, "subrole": subrole,
-     "fullScreen": fullScreen, "minimized": minimized, "resizable": resizable]
+    var out: [String: Any] = [
+      "pid": pid, "appName": appName, "bundleId": bundleId, "index": index,
+      "title": title, "x": x, "y": y, "w": w, "h": h, "subrole": subrole,
+      "fullScreen": fullScreen, "minimized": minimized, "resizable": resizable,
+    ]
+    if windowId != 0 { out["windowId"] = windowId }
+    return out
   }
 }
 
 // MARK: - AX 工具
+
+@_silgen_name("_AXUIElementGetWindow")
+func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: UnsafeMutablePointer<CGWindowID>) -> AXError
+
+func axWindowID(_ el: AXUIElement) -> CGWindowID? {
+  var wid: CGWindowID = 0
+  guard _AXUIElementGetWindow(el, &wid) == .success, wid != 0 else { return nil }
+  return wid
+}
 
 func axValue(_ el: AXUIElement, _ attr: CFString) -> CFTypeRef? {
   var v: CFTypeRef?
@@ -100,12 +114,13 @@ func windowsOf(_ pid: pid_t) -> [AXUIElement] {
   return out
 }
 
-func winInfo(_ app: NSRunningApplication, _ el: AXUIElement, _ index: Int) -> Win {
+func winInfo(_ app: NSRunningApplication?, _ pid: pid_t, _ el: AXUIElement, _ index: Int) -> Win {
   var w = Win()
-  w.pid = app.processIdentifier
-  w.appName = app.localizedName ?? ""
-  w.bundleId = app.bundleIdentifier ?? ""
+  w.pid = pid
+  w.appName = app?.localizedName ?? ""
+  w.bundleId = app?.bundleIdentifier ?? ""
   w.index = index
+  w.windowId = axWindowID(el) ?? 0
   w.title = axString(el, kAXTitleAttribute as CFString)
   if let p = axPoint(el) { w.x = Double(p.x); w.y = Double(p.y) }
   if let s = axSize(el) { w.w = Double(s.width); w.h = Double(s.height) }
@@ -116,7 +131,7 @@ func winInfo(_ app: NSRunningApplication, _ el: AXUIElement, _ index: Int) -> Wi
   return w
 }
 
-/// 焦点窗（AXFocusedWindow → AXMainWindow 兜底），带进程内索引；无焦点窗返回 nil
+/// 焦点窗（AXFocusedWindow → AXMainWindow 兜底），带进程内索引与 CGWindowID；无焦点窗返回 nil
 func focusedWindow(of app: NSRunningApplication) -> Win? {
   let pid = app.processIdentifier
   let axApp = AXUIElementCreateApplication(pid)
@@ -129,8 +144,11 @@ func focusedWindow(of app: NSRunningApplication) -> Win? {
   }
   guard let win = el else { return nil }
   let wins = windowsOf(pid)
-  guard let idx = wins.firstIndex(where: { CFEqual($0, win) }) else { return nil }
-  return winInfo(app, win, idx + 1)
+  let wid = axWindowID(win)
+  guard let idx = wins.firstIndex(where: { CFEqual($0, win) || (wid != nil && axWindowID($0) == wid) }) else {
+    return nil
+  }
+  return winInfo(app, pid, win, idx + 1)
 }
 
 /// 按 bundleId 或 name 匹配可见 App（与 AppleScript `visible is true` 语义对齐；
@@ -213,6 +231,18 @@ func screensJson() -> [[String: Any]] {
   }
 }
 
+// Prefer the immutable CGWindowID so kAXWindowsAttribute reorders (e.g. closing Raycast
+// and reactivating a Chromium/Electron app) never write to the wrong window.
+// Only fall back to 1-based index when no windowId was provided; if a windowId is
+// present and absent from the process, return nil rather than mutating another window.
+func resolveWindow<T>(_ wins: [T], index: Int, windowId: UInt32?, idOf: (T) -> UInt32?) -> T? {
+  if let wid = windowId, wid != 0 {
+    return wins.first(where: { idOf($0) == wid })
+  }
+  guard index >= 1, index <= wins.count else { return nil }
+  return wins[index - 1]
+}
+
 // MARK: - 分发
 
 enum OpResult {
@@ -241,12 +271,26 @@ func dispatch(_ op: String, _ params: [String: Any]) -> OpResult {
 
   case "windows":
     guard AXIsProcessTrusted() else { return .failure("untrusted") }
+    if let pidNums = params["pids"] as? [NSNumber] {
+      var seen = Set<pid_t>()
+      var out: [[String: Any]] = []
+      for num in pidNums {
+        let pid = num.int32Value
+        guard pid > 0, seen.insert(pid).inserted else { continue }
+        let app = NSRunningApplication(processIdentifier: pid)
+        for (i, el) in windowsOf(pid).enumerated() {
+          out.append(winInfo(app, pid, el, i + 1).json)
+        }
+      }
+      return .success(out)
+    }
     let apps = matchApps(bundleId: params["bundleId"] as? String,
                          name: params["name"] as? String)
     var out: [[String: Any]] = []
     for app in apps {
-      for (i, el) in windowsOf(app.processIdentifier).enumerated() {
-        out.append(winInfo(app, el, i + 1).json)
+      let pid = app.processIdentifier
+      for (i, el) in windowsOf(pid).enumerated() {
+        out.append(winInfo(app, pid, el, i + 1).json)
       }
     }
     return .success(out)
@@ -259,15 +303,17 @@ func dispatch(_ op: String, _ params: [String: Any]) -> OpResult {
     let items = params["items"] as? [[String: Any]] ?? []
     var out: [[String: Any]] = []
     for it in items {
+      let index = (it["index"] as? NSNumber)?.intValue ?? 0
+      let windowId = (it["windowId"] as? NSNumber)?.uint32Value
       guard let pid = (it["pid"] as? NSNumber)?.int32Value,
-            let index = (it["index"] as? NSNumber)?.intValue,
+            (index >= 1 || (windowId ?? 0) != 0),
             let x = it["x"] as? Double, let y = it["y"] as? Double,
             let w = it["w"] as? Double, let h = it["h"] as? Double else {
         out.append(["ok": false, "error": "invalid-item"])
         continue
       }
       let wins = windowsOf(pid)
-      guard index >= 1, index <= wins.count else {
+      guard let targetWin = resolveWindow(wins, index: index, windowId: windowId, idOf: axWindowID) else {
         out.append(["ok": false, "error": "no-window"])
         continue
       }
@@ -275,7 +321,7 @@ func dispatch(_ op: String, _ params: [String: Any]) -> OpResult {
       if it["positionOnly"] as? Bool == true {
         var point = CGPoint(x: x, y: y)
         if x.isFinite, y.isFinite, let value = AXValueCreate(.cgPoint, &point) {
-          let status = AXUIElementSetAttributeValue(wins[index - 1], kAXPositionAttribute as CFString, value)
+          let status = AXUIElementSetAttributeValue(targetWin, kAXPositionAttribute as CFString, value)
           error = status == .success ? nil : "position:\(status.rawValue)"
         } else {
           error = "invalid-position"
@@ -289,10 +335,10 @@ func dispatch(_ op: String, _ params: [String: Any]) -> OpResult {
           setEnhancedUI: { value in
             AXUIElementSetAttributeValue(app, attr, value ? kCFBooleanTrue : kCFBooleanFalse) == .success
           },
-          write: { setFrame(wins[index - 1], x, y, w, h) }
+          write: { setFrame(targetWin, x, y, w, h) }
         )
       } else {
-        error = setFrame(wins[index - 1], x, y, w, h)
+        error = setFrame(targetWin, x, y, w, h)
       }
       if let err = error {
         out.append(["ok": false, "error": err])
@@ -304,11 +350,12 @@ func dispatch(_ op: String, _ params: [String: Any]) -> OpResult {
 
   case "raise":
     guard AXIsProcessTrusted() else { return .failure("untrusted") }
-    if let pid = (params["pid"] as? NSNumber)?.int32Value,
-       let index = (params["index"] as? NSNumber)?.intValue {
+    if let pid = (params["pid"] as? NSNumber)?.int32Value {
+      let index = (params["index"] as? NSNumber)?.intValue ?? 0
+      let windowId = (params["windowId"] as? NSNumber)?.uint32Value
       let wins = windowsOf(pid)
-      if index >= 1, index <= wins.count {
-        AXUIElementPerformAction(wins[index - 1], kAXRaiseAction as CFString)
+      if let targetWin = resolveWindow(wins, index: index, windowId: windowId, idOf: axWindowID) {
+        AXUIElementPerformAction(targetWin, kAXRaiseAction as CFString)
       }
     }
     return .success(NSNull())

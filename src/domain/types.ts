@@ -44,6 +44,8 @@ export interface LayoutsData {
 export interface TargetWindow {
   /** 临时句柄：进程 unix id + 窗口索引（如 "12345|1"）；窗口列表变化时索引可能失效 */
   id: string;
+  /** macOS 原生 CGWindowID（由 windowkit 读取）；窗口存续期内不变，跨索引重排与标题变化唯一标识同一窗口 */
+  windowId?: number;
   appName: string;
   bundleId: string;
   title: string;

@@ -18,7 +18,7 @@ import { screenRegionForWindow } from "../../utils/geometry";
 
 const RAYCAST_NAME = "Raycast";
 /** 与 assets/windowkit.swift 的 WINDOWKIT_VERSION 保持一致；不一致时重新编译/重建 helper */
-const WINDOWKIT_VERSION = 9;
+const WINDOWKIT_VERSION = 10;
 const CACHE_DIR = path.join(os.homedir(), "Library", "Caches", "raycast-window-panel");
 const BIN_NAME = "windowkit";
 const SOCK_NAME = "windowkit.sock";
@@ -299,6 +299,7 @@ interface RawWin {
   minimized: boolean;
   resizable: boolean;
   index: number;
+  windowId?: number;
 }
 
 /** windowkit 主后端。语义与 AppleScriptWindowProvider 对齐（过滤/z 序近似/缓存/重试）。 */
@@ -378,7 +379,7 @@ export class WindowKitProvider implements WindowProvider {
           !w.minimized &&
           this.isStandard(w) &&
           !isDesktopWindow(w, screens) &&
-          `${w.pid}|${w.index}` !== target.id &&
+          !(target.windowId && w.windowId ? w.windowId === target.windowId : `${w.pid}|${w.index}` === target.id) &&
           w.x + w.w > region.x &&
           w.x < region.x + region.w &&
           w.y + w.h > region.y &&
@@ -412,6 +413,31 @@ export class WindowKitProvider implements WindowProvider {
       return (await this.fetchRaws(scoped ? bundleId : undefined))
         .filter((w) => w.appName !== RAYCAST_NAME && !w.minimized && this.isStandard(w))
         .map((w) => this.toTargetWindow(w));
+    } catch (e) {
+      this.logChannel(e);
+      return [];
+    }
+  }
+
+  async readWindows(windows: TargetWindow[]): Promise<TargetWindow[]> {
+    try {
+      const pids = [
+        ...new Set(
+          windows
+            .map((w) => Number(w.id.split("|")[0]))
+            .filter((pid) => Number.isInteger(pid) && pid > 0)
+        ),
+      ];
+      if (pids.length === 0) return [];
+      const rows = await this.client.request<Array<Record<string, unknown>>>("windows", { pids });
+      const out: TargetWindow[] = [];
+      for (const r of rows ?? []) {
+        const raw = this.parseRow(r);
+        if (raw && raw.appName !== RAYCAST_NAME && !raw.minimized) {
+          out.push(this.toTargetWindow(raw));
+        }
+      }
+      return out;
     } catch (e) {
       this.logChannel(e);
       return [];
@@ -509,7 +535,11 @@ export class WindowKitProvider implements WindowProvider {
     const index = Number(parts[1]);
     if (!Number.isFinite(pid) || !Number.isFinite(index)) return;
     try {
-      await this.client.request("raise", { pid, index });
+      await this.client.request("raise", {
+        pid,
+        index,
+        ...(w.windowId ? { windowId: w.windowId } : {}),
+      });
     } catch (e) {
       this.logChannel(e);
     }
@@ -539,6 +569,8 @@ export class WindowKitProvider implements WindowProvider {
     const h = Number(r.h);
     if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(index) || index <= 0) return null;
     if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null;
+    const rawWid = r.windowId === undefined || r.windowId === null ? undefined : Number(r.windowId);
+    const windowId = rawWid !== undefined && Number.isInteger(rawWid) && rawWid > 0 ? rawWid : undefined;
     return {
       pid,
       appName: String(r.appName ?? ""),
@@ -553,6 +585,7 @@ export class WindowKitProvider implements WindowProvider {
       minimized: r.minimized === true,
       resizable: r.resizable !== false,
       index,
+      ...(windowId ? { windowId } : {}),
     };
   }
 
@@ -563,6 +596,7 @@ export class WindowKitProvider implements WindowProvider {
   private toTargetWindow(raw: RawWin): TargetWindow {
     return {
       id: `${raw.pid}|${raw.index}`,
+      ...(raw.windowId ? { windowId: raw.windowId } : {}),
       appName: raw.appName,
       bundleId: raw.bundleId || "unknown",
       title: raw.title || "",
@@ -578,7 +612,12 @@ export class WindowKitProvider implements WindowProvider {
     const pid = Number(parts[0]);
     const index = Number(parts[1]);
     const res = await this.client.request<Array<{ ok?: boolean; error?: string }>>("setbounds", {
-      items: [{ pid, index, x: frame.x, y: frame.y, w: frame.w, h: frame.h, positionOnly, resizeCompatibilityRetry }],
+      items: [{
+        pid, index,
+        ...(w.windowId ? { windowId: w.windowId } : {}),
+        x: frame.x, y: frame.y, w: frame.w, h: frame.h,
+        positionOnly, resizeCompatibilityRetry,
+      }],
     });
     const first = res?.[0];
     if (!first) return "no-result";
@@ -594,7 +633,9 @@ export class WindowKitProvider implements WindowProvider {
         const pid = Number(parts[0]);
         const index = Number(parts[1]);
         return {
-          pid, index, x: it.frame.x, y: it.frame.y, w: it.frame.w, h: it.frame.h,
+          pid, index,
+          ...(it.window.windowId ? { windowId: it.window.windowId } : {}),
+          x: it.frame.x, y: it.frame.y, w: it.frame.w, h: it.frame.h,
           positionOnly: it.positionOnly, resizeCompatibilityRetry: it.resizeCompatibilityRetry,
         };
       }),

@@ -306,6 +306,19 @@ end tell`,
     return this.filterStandard(raws);
   }
 
+  /** 写入后校验专用：保留非标准 subrole 的活跃窗口（如 Electron AXDialog），避免读回时被误滤。 */
+  async readWindows(windows: TargetWindow[]): Promise<TargetWindow[]> {
+    const bundleIds = [...new Set(windows.map((w) => w.bundleId))];
+    if (bundleIds.length === 0) return [];
+    const needsAll = bundleIds.some((b) => !b || b === "unknown");
+    const raws = needsAll
+      ? await this.enumerateWindows()
+      : (await Promise.all(bundleIds.map((b) => this.enumerateWindows(b)))).flat();
+    return raws
+      .filter((w) => w.appName !== RAYCAST_NAME && !w.minimized)
+      .map((w) => this.toTargetWindow(w));
+  }
+
   private filterStandard(raws: RawWindow[]): TargetWindow[] {
     return raws
       .filter((w) => w.appName !== RAYCAST_NAME && !w.minimized && this.isStandard(w))

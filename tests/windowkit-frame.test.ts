@@ -15,7 +15,12 @@ it.skipIf(process.platform !== "darwin")("production Swift writer has no settlin
   fs.mkdirSync(dir, { recursive: true });
   const test = path.join(dir, "main.swift");
   const compat = writer.slice(writer.indexOf("func withResizeCompatibility("));
-  fs.writeFileSync(test, "import Foundation\nimport CoreGraphics\n" + source.slice(start, end) + compat + `
+  const resolveStart = source.indexOf("func resolveWindow<T>");
+  const resolveEnd = source.indexOf("\n// MARK: - 分发", resolveStart);
+  expect(resolveStart).toBeGreaterThan(0);
+  expect(resolveEnd).toBeGreaterThan(resolveStart);
+  const resolveFn = source.slice(resolveStart, resolveEnd);
+  fs.writeFileSync(test, "import Foundation\nimport CoreGraphics\n" + source.slice(start, end) + compat + resolveFn + `
 let target = CGRect(x: -1920, y: 25, width: 1920, height: 1055)
 var events: [String] = []
 let result = applyFrame(target, position: { events.append("position"); return nil }, size: { events.append("size"); return nil })
@@ -32,6 +37,16 @@ assert(events == ["disable", "write", "restore"])
 assert(withResizeCompatibility(voiceOverEnabled: true, enhancedUIEnabled: { fatalError() }, setEnhancedUI: { _ in fatalError() }, write: { nil }) == nil)
 assert(withResizeCompatibility(voiceOverEnabled: false, enhancedUIEnabled: { false }, setEnhancedUI: { _ in fatalError() }, write: { nil }) == nil)
 assert(withResizeCompatibility(voiceOverEnabled: false, enhancedUIEnabled: { true }, setEnhancedUI: { $0 == false }, write: { nil }) == "enhanced-ui-restore-failed")
+struct FakeWin { let name: String; let wid: UInt32? }
+let wins = [FakeWin(name: "A", wid: 200), FakeWin(name: "B", wid: 100)]
+// Index shifted from 2 to 1 (now at slot 0): resolves by windowId, not stale index 2.
+assert(resolveWindow(wins, index: 2, windowId: 200, idOf: { $0.wid })?.name == "A")
+// Specified windowId disappeared: never fall back to mutating the wrong window at index 1.
+assert(resolveWindow(wins, index: 1, windowId: 999, idOf: { $0.wid }) == nil)
+// No windowId provided (nil or 0): falls back to 1-based index.
+assert(resolveWindow(wins, index: 2, windowId: nil, idOf: { $0.wid })?.name == "B")
+assert(resolveWindow(wins, index: 1, windowId: 0, idOf: { $0.wid })?.name == "A")
+assert(resolveWindow(wins, index: 3, windowId: nil, idOf: { $0.wid }) == nil)
 print("frame passed")
 `);
   const binary = path.join(dir, "test");

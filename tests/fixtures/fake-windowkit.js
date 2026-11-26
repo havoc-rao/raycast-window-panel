@@ -18,11 +18,11 @@ try {
 }
 
 const CANNED_WINDOWS = [
-  { pid: 11228, appName: "Electron", bundleId: "com.github.Electron", index: 1, title: "Harness", x: 0, y: 0, w: 900, h: 600, subrole: "AXStandardWindow", fullScreen: false, minimized: false, resizable: true },
-  { pid: 11228, appName: "Electron", bundleId: "com.github.Electron", index: 2, title: "Console", x: 500, y: 0, w: 400, h: 300, subrole: "", fullScreen: false, minimized: false, resizable: true },
-  { pid: 11228, appName: "Electron", bundleId: "com.github.Electron", index: 3, title: "Hidden", x: 0, y: 0, w: 100, h: 100, subrole: "AXStandardWindow", fullScreen: false, minimized: true, resizable: true },
-  { pid: 999, appName: "Raycast", bundleId: "com.raycast.macos", index: 1, title: "Panel", x: 0, y: 0, w: 100, h: 100, subrole: "AXStandardWindow", fullScreen: false, minimized: false, resizable: true },
-  { pid: 777, appName: "Notes", bundleId: "com.apple.Notes", index: 1, title: "Note", x: 100, y: 100, w: 500, h: 400, subrole: "AXDialog", fullScreen: false, minimized: false, resizable: true },
+  { pid: 11228, appName: "Electron", bundleId: "com.github.Electron", index: 1, windowId: 1001, title: "Harness", x: 0, y: 0, w: 900, h: 600, subrole: "AXStandardWindow", fullScreen: false, minimized: false, resizable: true },
+  { pid: 11228, appName: "Electron", bundleId: "com.github.Electron", index: 2, windowId: 1002, title: "Console", x: 500, y: 0, w: 400, h: 300, subrole: "", fullScreen: false, minimized: false, resizable: true },
+  { pid: 11228, appName: "Electron", bundleId: "com.github.Electron", index: 3, windowId: 1003, title: "Hidden", x: 0, y: 0, w: 100, h: 100, subrole: "AXStandardWindow", fullScreen: false, minimized: true, resizable: true },
+  { pid: 999, appName: "Raycast", bundleId: "com.raycast.macos", index: 1, windowId: 2001, title: "Panel", x: 0, y: 0, w: 100, h: 100, subrole: "AXStandardWindow", fullScreen: false, minimized: false, resizable: true },
+  { pid: 777, appName: "Notes", bundleId: "com.apple.Notes", index: 1, windowId: 3001, title: "Note", x: 100, y: 100, w: 500, h: 400, subrole: "AXDialog", fullScreen: false, minimized: false, resizable: true },
 ];
 
 const server = net.createServer((conn) => {
@@ -50,7 +50,7 @@ const server = net.createServer((conn) => {
       };
       switch (req.op) {
         case "ping":
-          respond({ ok: true, result: { version: Number(process.env.WK_VERSION || 9) } });
+          respond({ ok: true, result: { version: Number(process.env.WK_VERSION || 10) } });
           break;
         case "screens":
           respond({ ok: true, result: [{ x: 0, y: 0, w: 1920, h: 1080 }] });
@@ -62,6 +62,9 @@ const server = net.createServer((conn) => {
               try { fs.writeFileSync(SOCK + ".burnt", "1"); } catch {}
             }
             respond({ ok: false, error: "untrusted" });
+          } else if (Array.isArray(req.params.pids)) {
+            const set = new Set(req.params.pids);
+            respond({ ok: true, result: CANNED_WINDOWS.filter((w) => set.has(w.pid)) });
           } else {
             const bid = req.params.bundleId;
             respond({ ok: true, result: bid ? CANNED_WINDOWS.filter((w) => w.bundleId === bid) : CANNED_WINDOWS });

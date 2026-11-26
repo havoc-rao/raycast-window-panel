@@ -44,6 +44,11 @@ export interface ArrangePlan {
   remember?: { n: number; id: string };
 }
 
+/** 窗口是否指向同一目标：有原生 CGWindowID 时按其去重，避免索引漂移把同一窗口算两遍 */
+function sameWindow(a: TargetWindow, b: TargetWindow): boolean {
+  return a.windowId && b.windowId ? a.windowId === b.windowId : a.id === b.id;
+}
+
 /**
  * arrangeContext：目标窗口 + 同屏标准窗口（已含目标且按 z 序近似排序，最多 8 个）→ 弹性/豁免划分。
  * 与 Lua 一致：记忆窗口完全无视（原位不动、不参与计数），其余窗口当作屏幕上的全部窗口。
@@ -56,7 +61,7 @@ export function makeArrangeContext(
   screens: Screen[]
 ): ArrangeContext | null {
   if (!target) return null;
-  const wins = [target, ...orderedWindows.filter((w) => w.id !== target.id)].slice(0, 8);
+  const wins = [target, ...orderedWindows.filter((w) => !sameWindow(w, target))].slice(0, 8);
   const fluid: TargetWindow[] = [];
   const ignored: TargetWindow[] = [];
   for (const w of wins) {
@@ -248,7 +253,7 @@ export function replayAppWindows(
   const records = Object.values(layouts.windows).filter((info) => info.bundleID === bundleId);
   for (const info of records) {
     const target = findWindowFor(info, allWindows, records.length === 1);
-    if (target && !windows.some((w) => w.id === target.id)) {
+    if (target && !windows.some((w) => sameWindow(w, target))) {
       windows.push(target);
       frames.push(clampFrame(info.frame, screens));
       count += 1;

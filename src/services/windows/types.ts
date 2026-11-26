@@ -10,6 +10,8 @@ export interface WindowProvider {
   listAllWindows(): Promise<TargetWindow[]>;
   /** 只枚举某 bundleID 进程的标准窗口（重放优化：避免全局枚举；bundleId 无法定位时由实现回落全量） */
   listWindowsForApp(bundleId: string): Promise<TargetWindow[]>;
+  /** 写入后校验专用：按目标窗口所属进程直接读回当前状态（含非标准 subrole），避免被列表过滤误判为读回失败 */
+  readWindows?(windows: TargetWindow[]): Promise<TargetWindow[]>;
   /** 目标窗口所在屏幕的整屏区域（原版 focused:screen():frame()） */
   getScreenRegion(w: TargetWindow): Promise<Region | null>;
   /** 全部屏幕（clampFrame 安全网；screens[0] 约定主屏） */

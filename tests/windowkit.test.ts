@@ -47,7 +47,7 @@ describe("windowkit socket 线协议", () => {
   it("ping 往返 + 版本校验", async () => {
     const client = await startClient();
     const pong = await client.request<{ version: number }>("ping");
-    expect(pong.version).toBe(9);
+    expect(pong.version).toBe(10);
     client.stop();
   });
 
@@ -70,7 +70,7 @@ describe("windowkit socket 线协议", () => {
     const client = await startClient();
     await expect(client.request("windows", {}, 100)).rejects.toThrow("超时");
     process.env.WK_DELAY = "0";
-    expect(await client.request("ping")).toEqual({ version: 9 });
+    expect(await client.request("ping")).toEqual({ version: 10 });
     client.stop();
   });
 
@@ -105,7 +105,7 @@ describe("windowkit socket 线协议", () => {
     c1.stop(); // 只断开连接，不杀 daemon
     const c2 = new WindowKitClient(FIXTURE, sockPath);
     expect(await c2.start()).toBe(true); // 复用：不再 spawn
-    expect(await c2.request("ping")).toEqual({ version: 9 });
+    expect(await c2.request("ping")).toEqual({ version: 10 });
     expect(fs.readFileSync(countFile, "utf8")).toBe("1"); // spawn 次数仍为 1
     started.push(c2);
   });
@@ -228,18 +228,47 @@ describe("WindowKitProvider（假 daemon 端到端）", () => {
     await expect(write).rejects.toThrow("-10000");
   });
 
-  it("批量写入向 helper 传递仅移动标记", async () => {
+  it("批量写入向 helper 传递仅移动标记与原生 windowId", async () => {
     const p = await provider();
     const request = vi.spyOn(WindowKitClient.prototype, "request");
     try {
       const [window] = await p.listAllWindows();
+      expect(window.windowId).toBe(1001);
       await p.setBoundsBatch([{ window, frame: { ...window.bounds, x: 10 }, positionOnly: true }]);
       expect(request).toHaveBeenCalledWith("setbounds", {
-        items: [expect.objectContaining({ pid: 11228, index: 1, x: 10, positionOnly: true })],
+        items: [expect.objectContaining({ pid: 11228, index: 1, windowId: 1001, x: 10, positionOnly: true })],
       });
+      await p.raise(window);
+      expect(request).toHaveBeenCalledWith("raise", { pid: 11228, index: 1, windowId: 1001 });
     } finally {
       request.mockRestore();
     }
+  });
+
+  it("readWindows：按 pid 直读且保留非标准 subrole 窗口（供写入后校验使用）", async () => {
+    const p = await provider();
+    const client = (p as unknown as { client: WindowKitClient }).client;
+    const spy = vi.spyOn(client, "request");
+    const rows = await p.readWindows([
+      { id: "777|1", windowId: 3001, appName: "Notes", bundleId: "com.apple.Notes", title: "Note", bounds: { x: 100, y: 100, w: 500, h: 400 }, fullScreen: false, positionable: true, resizable: true },
+      { id: "11228|2", windowId: 1002, appName: "Electron", bundleId: "com.github.Electron", title: "Console", bounds: { x: 500, y: 0, w: 400, h: 300 }, fullScreen: false, positionable: true, resizable: true },
+    ]);
+    expect(spy).toHaveBeenCalledWith("windows", { pids: [777, 11228] });
+    expect(rows.map((w) => ({ id: w.id, windowId: w.windowId, title: w.title }))).toEqual([
+      { id: "11228|1", windowId: 1001, title: "Harness" },
+      { id: "11228|2", windowId: 1002, title: "Console" },
+      { id: "777|1", windowId: 3001, title: "Note" },
+    ]);
+  });
+
+  it("listWindowsOnActiveDesktop：target 索引漂移时仍按 windowId 去重，不把自己重复算入排布", async () => {
+    const p = await provider();
+    const shiftedTarget = {
+      id: "11228|2", windowId: 1001, appName: "Electron", bundleId: "com.github.Electron", title: "Harness",
+      bounds: { x: 0, y: 0, w: 900, h: 600 }, fullScreen: false, positionable: true, resizable: true,
+    };
+    const wins = await p.listWindowsOnActiveDesktop(shiftedTarget);
+    expect(wins.map((w) => w.title)).toEqual(["Console"]);
   });
 
   it("无效句柄 → 直接抛 no-window，不发请求", async () => {
